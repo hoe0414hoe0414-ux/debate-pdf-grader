@@ -4,6 +4,7 @@ import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from 
 const LAYOUTS = { auto: '자동', duplex: '양면', simplex: '단면' };
 
 const $ = (s) => document.querySelector(s);
+const fmtNum = (n) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const collator = new Intl.Collator('ko', { numeric: true, sensitivity: 'base' });
 const CONCURRENCY = 2;
@@ -40,7 +41,7 @@ let running = 0;
 function persist() {
   return store.set(KEY, { idDigits: state.idDigits, criteriaText: state.criteriaText, criteria: state.criteria, savedAt: state.savedAt, notes: state.notes, layoutDefault: state.layoutDefault });
 }
-const settingsSig = () => `${state.idDigits}\u0003${criteriaSignature(state.criteria)}\u0003${state.notes}`;
+const settingsSig = () => `${state.idDigits}\u0003${state.criteriaText}\u0003${criteriaSignature(state.criteria)}\u0003${state.notes}`;
 // 파일마다 고른 양면/단면 (null이면 설정의 기본값을 따름)
 const layoutChoice = (f) => f.layout || state.layoutDefault;
 const fileSig = (f) => `${settingsSig()}\u0003${layoutChoice(f)}`;
@@ -91,6 +92,7 @@ window.addEventListener('hashchange', route);
 
 // ── 설정 화면 ────────────────────────────────────────────────────────────
 const ta = $('#criteria');
+let draftAt = null; // 임시 저장 시각 (-1: 브라우저가 저장을 막음)
 const notes = $('#reading-notes');
 
 function initSettings() {
@@ -114,13 +116,22 @@ function initSettings() {
   });
   const draft = store.get(DRAFT_KEY);
   ta.value = typeof draft === 'string' ? draft : state.criteriaText;
+  if (typeof draft === 'string' && draft !== state.criteriaText) draftAt = Date.now();
   notes.value = state.notes;
 
+  // 작성 중인 내용은 자동으로 임시 저장 (새로고침·창 닫기에도 유지)
   let vTimer = 0;
-  ta.addEventListener('input', () => {
+  const saveDraft = () => {
     clearTimeout(vTimer);
-    vTimer = setTimeout(() => { store.set(DRAFT_KEY, ta.value); renderCriteriaState(); }, 150);
-  });
+    if (ta.value === state.criteriaText) { store.del(DRAFT_KEY); draftAt = null; }
+    else if (store.set(DRAFT_KEY, ta.value)) draftAt = Date.now();
+    else draftAt = -1;
+    renderCriteriaState();
+  };
+  ta.addEventListener('input', () => { clearTimeout(vTimer); vTimer = setTimeout(saveDraft, 300); });
+  ta.addEventListener('blur', saveDraft);
+  window.addEventListener('pagehide', saveDraft);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveDraft(); });
   // Tab 키로 | 구분자 사이를 쉽게 쓰도록 하지 않음(접근성 유지). Ctrl/Cmd+S 저장 지원.
   ta.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveCriteria(); }
@@ -133,41 +144,46 @@ function initSettings() {
 
   $('#criteria-save').addEventListener('click', saveCriteria);
   $('#criteria-revert').addEventListener('click', () => {
-    ta.value = state.criteriaText; store.del(DRAFT_KEY); renderCriteriaState(); toast('저장된 기준으로 되돌렸어요.');
+    ta.value = state.criteriaText; store.del(DRAFT_KEY); draftAt = null; renderCriteriaState(); toast('저장된 기준으로 되돌렸어요.');
   });
   $('#criteria-example').addEventListener('click', () => {
     if (ta.value.trim() && ta.value !== EXAMPLE_CRITERIA) {
       ta.value = `${ta.value.replace(/\s+$/, '')}\n\n${EXAMPLE_CRITERIA}`;
-      toast('예시를 기존 내용 아래에 붙였어요. 겹치는 항목은 지워 주세요.');
+      toast('예시를 기존 내용 아래에 붙였어요. 겹치는 부분은 지워 주세요.');
     } else ta.value = EXAMPLE_CRITERIA;
-    store.set(DRAFT_KEY, ta.value);
+    if (store.set(DRAFT_KEY, ta.value)) draftAt = Date.now();
     renderCriteriaState();
     ta.focus();
   });
   renderCriteriaState();
 }
 
+const hhmm = (t) => new Date(t).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 function renderCriteriaState() {
   const r = parseCriteria(ta.value);
   const box = $('#criteria-validation');
   const lines = [];
-  if (r.ok) lines.push(`<div class="ok">✓ 항목 ${r.items.length}개 · 총점 ${r.total}점</div>`);
-  r.errors.slice(0, 8).forEach((e) => lines.push(`<div class="err">✕ ${esc(e.msg)}</div>`));
-  if (r.errors.length > 8) lines.push(`<div class="err">… 오류 ${r.errors.length - 8}개 더</div>`);
-  if (r.ok) r.warnings.slice(0, 3).forEach((w) => lines.push(`<div class="warn">! ${esc(w)}</div>`));
+  if (r.ok) {
+    const chips = r.items.map((it) => `<span class="chip">${esc(it.name)} <b>${fmtNum(it.points)}점</b></span>`).join('');
+    lines.push(`<div class="ok">✓ 결과표에 쓸 채점 항목 ${r.items.length}개 · 총 ${fmtNum(r.total)}점${r.assumed ? ' (자동 지정)' : ''}</div><div class="chips">${chips}</div>`);
+    lines.push('<div class="muted">적은 글 전체가 AI에게 채점 지시문으로 그대로 전달돼요.</div>');
+  }
+  r.errors.forEach((e) => lines.push(`<div class="err">✕ ${esc(e.msg)}</div>`));
+  r.warnings.slice(0, 3).forEach((w) => lines.push(`<div class="warn">! ${esc(w)}</div>`));
   box.innerHTML = lines.join('');
 
   const st = $('#criteria-state');
   const isDirty = ta.value !== state.criteriaText;
   st.className = 'save-state' + (isDirty ? ' dirty' : state.savedAt ? ' saved' : '');
-  st.textContent = isDirty ? '저장되지 않은 변경 있음' : state.savedAt ? `저장됨 · ${new Date(state.savedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : '아직 저장 안 됨';
-  $('#criteria-save').disabled = !r.ok;
+  if (isDirty) st.textContent = draftAt === -1 ? '이 브라우저는 임시 저장이 막혀 있어요 · ‘기준 저장’을 눌러 주세요' : draftAt ? `작성 중 · ${hhmm(draftAt)} 임시 저장됨 · 채점에 쓰려면 ‘기준 저장’` : '작성 중';
+  else st.textContent = state.savedAt ? `저장됨 · ${new Date(state.savedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : '아직 저장 안 됨';
+  $('#criteria-save').disabled = !r.ok || (!isDirty && !!state.savedAt);
   $('#criteria-revert').disabled = !isDirty || !state.savedAt;
 }
 
 function saveCriteria() {
   const r = parseCriteria(ta.value);
-  if (!r.ok) { renderCriteriaState(); toast('채점 기준에 오류가 있어 저장하지 않았어요. 빨간 안내를 확인해 주세요.'); return; }
+  if (!r.ok) { renderCriteriaState(); toast('채점 기준이 비어 있어요.'); return; }
   const before = criteriaSignature(state.criteria);
   state.criteriaText = ta.value;
   state.criteria = r.items.map(({ name, points, desc }) => ({ name, points, desc }));
@@ -175,7 +191,8 @@ function saveCriteria() {
   const ok = persist();
   store.del(DRAFT_KEY);
   renderCriteriaState();
-  toast(ok ? `채점 기준 ${r.items.length}개 항목을 저장했어요.` : '저장했지만 이 브라우저는 저장소가 막혀 있어 새로고침하면 사라져요.');
+  draftAt = null;
+  toast(ok ? `채점 기준을 저장했어요. (채점 항목 ${r.items.length}개)` : '저장했지만 이 브라우저는 저장소가 막혀 있어 새로고침하면 사라져요.');
   if (before !== criteriaSignature(state.criteria)) markStale();
   pump();
 }
@@ -244,7 +261,7 @@ async function run(f) {
   f.abort = ctrl; f.status = 'grading'; f.error = '';
   invalidate('files', 'badges');
   const sig = fileSig(f);
-  const opts = { criteria: state.criteria, idDigits: state.idDigits, notes: state.notes, layout: layoutChoice(f) };
+  const opts = { criteria: state.criteria, prompt: state.criteriaText, idDigits: state.idDigits, notes: state.notes, layout: layoutChoice(f) };
   try {
     const res = await gradeFile(f.file, opts, ctrl.signal);
     if (state.files.get(f.id) !== f || f.abort !== ctrl) return; // 도중에 삭제되었거나 다시 채점 시작됨

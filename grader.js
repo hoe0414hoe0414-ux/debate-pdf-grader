@@ -228,7 +228,8 @@ function demoScanGrade(seedStr, criteria) {
  * 여기서 fetch로 { 기준, 참고사항, PDF 텍스트 또는 페이지 이미지 }를 보내 점수를 받아오면 됩니다.
  * null을 돌려주면 아래 데모 채점이 사용됩니다.
  */
-async function aiGrade(/* { file, pages, text, criteria, notes, signal } — pages: 이 학생의 쪽 번호 배열 */) {
+// prompt: 선생님이 쓴 채점 기준 전체(자유 서술). criteria: 그 안에서 뽑은 결과표 열(항목·배점). pages: 이 학생의 쪽 번호 배열
+async function aiGrade(/* { file, pages, text, prompt, criteria, notes, signal } */) {
   return null;
 }
 
@@ -238,7 +239,7 @@ const pageLabel = (pages) => (pages.length === 1 ? `${pages[0]}쪽` : `${pages[0
  * 파일 하나를 읽어 학생별로 나누고 채점한다.
  * layout: 'auto' | 'duplex'(양면: 2쪽=1명) | 'simplex'(단면: 1쪽=1명)
  */
-export async function gradeFile(file, { criteria, idDigits, notes, layout = 'auto' }, signal) {
+export async function gradeFile(file, { criteria, prompt = '', idDigits, notes, layout = 'auto' }, signal) {
   const { pageCount, totalPages, texts, hasText, groups, detected } = await readPdf(file, { layout, idDigits }, signal);
   const effLayout = detected ? detected.layout : layout;
   const single = groups.length === 1;
@@ -250,7 +251,7 @@ export async function gradeFile(file, { criteria, idDigits, notes, layout = 'aut
     const name = single ? extractName(file.name, text) : extractName('', text);
     const stText = text.replace(/\s/g, '').length >= MIN_TEXT_CHARS;
 
-    let scores = await aiGrade({ file, pages, text, criteria, notes, signal });
+    let scores = await aiGrade({ file, pages, text, prompt, criteria, notes, signal });
     let mode = 'ai';
     if (!scores) {
       if (stText) { scores = heuristicGrade(text, criteria); mode = 'text'; }
