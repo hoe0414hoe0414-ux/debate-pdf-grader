@@ -39,11 +39,27 @@ function rng(seed) { // mulberry32
 }
 const roundHalf = (n) => Math.round(n * 2) / 2;
 
+// 학번 = 학년(1자리) + 반 + 번호(2자리)
+//   5자리: 20301 → 2학년 03반 01번      4자리: 2301 → 2학년 3반 01번
+const validId = (id, digits) => {
+  const g = +id[0], c = +id.slice(1, digits - 2), n = +id.slice(-2);
+  return g >= 1 && g <= 6 && c >= 1 && n >= 1 && n <= 60;
+};
 export function extractStudentId(text, digits) {
   if (!text) return '';
-  const re = new RegExp(`(?<!\\d)(\\d{${digits}})(?!\\d)`);
-  const m = String(text).match(re);
-  return m ? m[1] : '';
+  const src = String(text);
+  // “2학년 3반 1번”처럼 풀어 쓴 경우도 학번으로 바꿔 준다
+  const k = src.match(/([1-6])\s*학년\s*(\d{1,2})\s*반\s*(\d{1,2})\s*번/);
+  if (k && (digits === 5 || +k[2] < 10)) {
+    return k[1] + (digits === 5 ? k[2].padStart(2, '0') : String(+k[2])) + k[3].padStart(2, '0');
+  }
+  const re = new RegExp(`(?<!\\d)(\\d{${digits}})(?!\\d)`, 'g');
+  let first = '';
+  for (const m of src.matchAll(re)) {
+    if (validId(m[1], digits)) return m[1]; // 학년·반·번호 규칙에 맞는 숫자를 우선
+    if (!first) first = m[1];
+  }
+  return first;
 }
 
 const NAME_STOP = new Set(['토론', '수행', '평가', '수행평가', '입론', '입론서', '반론', '최종', '제출', '학번', '이름', '성명', '과제', '스캔', '사본', '국어', '찬성', '반대', '개요', '보고서']);
