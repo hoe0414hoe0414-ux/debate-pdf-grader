@@ -1,5 +1,5 @@
-import { parseCriteria, criteriaSignature, EXAMPLE_CRITERIA } from './criteria.js?v=4';
-import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js?v=4';
+import { parseCriteria, criteriaSignature, EXAMPLE_CRITERIA } from './criteria.js?v=5';
+import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js?v=5';
 
 const LAYOUTS = { auto: '자동', duplex: '양면', simplex: '단면' };
 const $ = (s) => document.querySelector(s);
@@ -607,9 +607,9 @@ function renderResults() {
     .concat(state.sections.map((s) => {
       const on = sel.kind !== 'all' && sel.sec === s.id;
       const c = counts(s.id);
-      const cur = on && sel.kind === 'file' ? ` · ${esc(fileTitle(state.files.get(sel.file)))}` : on ? ' · 전체' : '';
+      const cur = on && sel.kind === 'file' ? ` · ${esc(fileTitle(state.files.get(sel.file)))}` : on ? ' · 모든 학급' : '';
       const dot = c.x ? 'fail' : c.s ? 'success' : '';
-      return `<button type="button" class="tab sec-rtab" role="tab" data-rtab="${s.id}" aria-selected="${on}" aria-haspopup="menu"${menuFor === s.id ? ' aria-expanded="true"' : ''} title="${esc(secName(s))}: 눌러서 학급(파일) 고르기"><span class="tdot ${dot}"></span>${esc(secName(s))}${cur}${c.students ? ` <small>${c.students}명</small>` : ''} <span class="caret" aria-hidden="true">▾</span></button>`;
+      return `<button type="button" class="tab sec-rtab" role="tab" data-rtab="${s.id}" aria-selected="${on}" aria-haspopup="menu"${menuFor === s.id ? ' aria-expanded="true"' : ''} title="${esc(secName(s))}: 눌러서 학급 고르기"><span class="tdot ${dot}"></span>${esc(secName(s))}${cur}${c.n ? ` <small>학급 ${c.n}</small>` : ''} <span class="caret" aria-hidden="true">▾</span></button>`;
     })).join('');
   if (tabs.dataset.h !== tabsHtml) {
     tabs.innerHTML = tabsHtml; tabs.dataset.h = tabsHtml;
@@ -640,17 +640,17 @@ function scoreCells(st, crit) {
     + `<td class="num total">${fmt(st.total)}${st.mode === 'scan-demo' ? '<span class="demo-tag">데모</span>' : ''}</td>`;
 }
 
-const FOOT = `<p class="muted" style="margin:0">※ 빨간색 ${BAD}는 AI가 학생이 쓴 글을 해석하지 못한 경우예요. 원본 PDF를 직접 확인해 주세요. ‘데모’ 표시는 스캔본에 임시 점수를 보여 준 것입니다. 줄을 누르면 그 학급(파일)의 상세 결과가 열려요.</p>`;
+const FOOT = `<p class="muted" style="margin:0">※ 빨간색 ${BAD}는 AI가 학생이 쓴 글을 해석하지 못한 경우예요. 원본 PDF를 직접 확인해 주세요. ‘데모’ 표시는 스캔본에 임시 점수를 보여 준 것입니다. 줄을 누르면 그 학급의 점수표가 열려요.</p>`;
 
 // 한 영역의 모든 학생을 한 표로 (영역마다 채점 항목이 달라서 표를 영역별로 나눈다)
 function renderSectionTable(sec) {
   const ids = filesOf(sec.id);
   const crit = sec.criteria;
   const c = counts(sec.id);
-  const title = `<div class="sec-title"><h2>${esc(secName(sec))}</h2><span class="muted">${ids.length ? `학급(파일) ${ids.length}개 · 학생 ${c.students}명` : '올린 파일 없음'}</span></div>`;
+  const title = `<div class="sec-title"><h2>${esc(secName(sec))}</h2><span class="muted">${ids.length ? `학급 ${ids.length}개 · 학생 ${c.students}명` : '올린 파일 없음'}</span></div>`;
   if (!ids.length) return `${title}<div class="empty">이 영역에 올린 파일이 없어요. <a href="#files" data-go-sec="${sec.id}">업로드 파일</a>에서 올려 주세요.</div>`;
   if (!crit.length) return `${title}<div class="empty">‘${esc(secName(sec))}’의 채점 기준이 아직 저장되지 않았어요. <a href="#settings" data-go-sec="${sec.id}">설정</a>에서 저장하면 바로 채점돼요.</div>`;
-  const head = `<tr><th>학번</th><th>이름</th><th>학급(파일)</th><th>쪽</th>${crit.map((x) => `<th class="num">${esc(x.name)} (${fmt(x.points)})</th>`).join('')}<th class="num">총점 (${fmt(totalOf(crit))})</th></tr>`;
+  const head = `<tr><th>학번</th><th>이름</th><th>학급</th><th>쪽</th>${crit.map((x) => `<th class="num">${esc(x.name)} (${fmt(x.points)})</th>`).join('')}<th class="num">총점 (${fmt(totalOf(crit))})</th></tr>`;
   const rows = [];
   for (const id of ids) {
     const f = state.files.get(id);
@@ -685,40 +685,21 @@ function renderDetail(f) {
   const layoutTxt = r.layout ? `${LAYOUTS[r.layout]}${r.layoutAuto ? ' (자동 판단)' : ' (직접 지정)'}` : '–';
   const sts = r.students;
 
-  if (sts.length === 1) {
-    const st = sts[0];
-    const modeLabel = !st.mode ? '–' : st.mode === 'text' ? '글자 PDF' : st.mode === 'ai' ? 'AI 판독' : '스캔본 (데모 점수)';
-    const top = `<div class="detail-grid">
-      ${stat('학번', esc(st.studentId || '찾지 못함'))}
-      ${stat('이름', esc(st.name || '찾지 못함'))}
-      ${stat('총점', st.status !== 'success' ? BAD : `${fmt(st.total)} / ${fmt(totalOf(crit))}`, st.status !== 'success' ? 'bad' : 'good')}
-      ${stat('판독 방식', `<span style="font-size:15px">${modeLabel}${r.pages ? ` · ${r.pages}쪽 · ${layoutTxt}` : ''}</span>`)}
-    </div>`;
-    const rows = crit.map((c) => {
-      const s = st.scores?.find((x) => x.name === c.name);
-      const val = st.status !== 'success' ? `<td class="num bad">${BAD}</td>` : s ? `<td class="num total">${fmt(s.score)}</td>` : '<td class="num pending">–</td>';
-      return `<tr><td>${esc(c.name)}</td><td class="num">${fmt(c.points)}</td>${val}<td class="wrap">${esc(s?.comment || c.desc || '')}</td></tr>`;
-    }).join('');
-    const table = `<div class="table-wrap"><table><thead><tr><th>채점 항목</th><th class="num">배점</th><th class="num">점수</th><th>근거</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    const preview = st.textPreview ? `<details class="preview"><summary>AI가 읽은 본문 미리보기</summary><pre>${esc(st.textPreview)}</pre></details>` : '';
-    return `<div class="stack">${title}${reason}${top}${table}${preview}</div>`;
-  }
-
-  // 한 파일에 학생이 여러 명 (학급 전체를 한 번에 스캔한 경우)
+  // 학급(파일 1개)의 학생별 점수표
   const ok = sts.filter((x) => x.status === 'success').length;
   const top = `<div class="detail-grid">
     ${stat('학생 수', `${sts.length}명`)}
     ${stat('채점 완료', `${ok}명`, 'good')}
     ${stat('채점 불가', `${sts.length - ok}명`, sts.length - ok ? 'bad' : '')}
-    ${stat('나눈 방식', `<span style="font-size:15px">${layoutTxt} · ${r.pages}쪽</span>`)}
+    ${stat('나눈 방식', `<span style="font-size:15px">${r.pages ? `${layoutTxt} · ${r.pages}쪽` : '–'}</span>`)}
   </div>`;
-  const head = `<tr><th>#</th><th>쪽</th><th>학번</th><th>이름</th>${crit.map((c) => `<th class="num">${esc(c.name)} (${fmt(c.points)})</th>`).join('')}<th class="num">총점 (${fmt(totalOf(crit))})</th></tr>`;
-  const rows = sts.map((st) => `<tr><td>${st.idx}</td><td>${esc(st.pageLabel)}</td><td>${esc(st.studentId || '–')}</td><td>${esc(studentLabel(f, st) || '–')}</td>${scoreCells(st, crit)}</tr>`).join('');
+  const head = `<tr><th>#</th><th>학번</th><th>이름</th><th>쪽</th>${crit.map((c) => `<th class="num">${esc(c.name)} (${fmt(c.points)})</th>`).join('')}<th class="num">총점 (${fmt(totalOf(crit))})</th></tr>`;
+  const rows = sts.map((st) => `<tr title="${esc((st.scores || []).filter((x) => x.comment).map((x) => `${x.name}: ${x.comment}`).join('\n'))}"><td>${st.idx}</td><td>${esc(st.studentId || '–')}</td><td>${esc(studentLabel(f, st) || '–')}</td><td>${esc(st.pageLabel || '–')}</td>${scoreCells(st, crit)}</tr>`).join('');
   const hint = r.layoutAuto ? `<p class="muted" style="margin:0">학생 나누기가 틀렸다면 <a href="#files" data-go-sec="${sec.id}">업로드 파일</a>에서 이 파일의 ‘양면/단면’ 버튼을 눌러 바꿔 주세요. 판단 근거: ${esc(r.layoutReason)}</p>` : '';
   return `<div class="stack">${title}${reason}${top}<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>${hint}</div>`;
 }
 
-// ── 결과 영역 드롭다운 (영역 이름을 누르면 학급(파일) 고르기) ─────────────────
+// ── 결과 영역 드롭다운 (영역 이름을 누르면 학급 고르기) ─────────────────
 const menu = $('#tab-menu');
 let menuFor = null;
 function menuHtml(secId) {
@@ -726,14 +707,15 @@ function menuHtml(secId) {
   const ids = filesOf(secId);
   const sel = state.result;
   const item = (attr, label, on, extra = '') => `<button type="button" role="menuitemradio" aria-checked="${on}" ${attr}>${label}${extra}</button>`;
-  return item(`data-pick-sec="${secId}"`, `<b>‘${esc(secName(sec))}’ 전체 학생</b>`, sel.kind === 'sec' && sel.sec === secId, ` <small>${counts(secId).students}명</small>`)
-    + (ids.length ? '<div class="menu-sep" role="separator"></div><div class="menu-label">학급(파일)별</div>' : '<div class="menu-empty">아직 올린 파일이 없어요</div>')
-    + ids.map((id) => {
+  if (!ids.length) return '<div class="menu-empty">이 영역에 올린 파일(학급)이 없어요</div>';
+  return `<div class="menu-label">학급 선택 · ${ids.length}개</div>` + ids.map((id) => {
       const f = state.files.get(id);
       const n = f.result?.students.length;
       const dot = f.status === 'success' ? 'success' : f.status === 'fail' ? 'fail' : '';
-      return item(`data-pick-file="${id}"`, `<span class="tdot ${dot}"></span><span class="mname">${esc(fileTitle(f))}</span>`, sel.kind === 'file' && sel.file === id, n ? ` <small>${n}명</small>` : f.status === 'grading' ? ' <small>채점 중</small>' : '');
-    }).join('');
+      return item(`data-pick-file="${id}"`, `<span class="tdot ${dot}"></span><span class="mname">${esc(fileTitle(f))}</span>`, sel.kind === 'file' && sel.file === id, n ? ` <small>학생 ${n}명</small>` : f.status === 'grading' ? ' <small>채점 중</small>' : '');
+    }).join('')
+    + '<div class="menu-sep" role="separator"></div>'
+    + item(`data-pick-sec="${secId}"`, `‘${esc(secName(sec))}’ 모든 학급 한 표로 보기`, sel.kind === 'sec' && sel.sec === secId, '');
 }
 function refreshMenu() {
   if (!secById(menuFor)) { closeMenu(); return; }
@@ -786,7 +768,7 @@ function exportCsv() {
     if (!ids.length) continue;
     const crit = sec.criteria;
     if (lines.length) lines.push([]);
-    lines.push(['영역', '학번', '이름', '학급(파일)', '쪽', ...crit.map((c) => `${c.name}(${c.points})`), `총점(${totalOf(crit)})`, '상태']);
+    lines.push(['영역', '학번', '이름', '학급', '쪽', ...crit.map((c) => `${c.name}(${c.points})`), `총점(${totalOf(crit)})`, '상태']);
     for (const id of ids) {
       const f = state.files.get(id);
       if (!f.result) { lines.push([secName(sec), '', '', f.name, '', ...crit.map(() => ''), '', '대기']); continue; }
