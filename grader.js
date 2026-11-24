@@ -12,11 +12,14 @@ const MIN_TEXT_CHARS = 40;     // 이보다 글자가 적으면 스캔본으로 
 
 const CMAP_URL = new URL('./vendor/pdfjs/cmaps/', import.meta.url).href; // 한글 등 CJK 글꼴 글자 해석용 (필요한 파일만 받아옴)
 let pdfjsPromise = null;
+let sharedWorker = null;
 // pdf.js는 처음 채점할 때만 불러온다 → 첫 화면 로딩이 가볍다.
 export function loadPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = import('./vendor/pdfjs/pdf.min.js').then((lib) => {
       lib.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdfjs/pdf.worker.min.js', import.meta.url).href;
+      // 작업 스레드 하나를 계속 재사용 → 파일마다 엔진을 새로 띄우지 않아 빠르다
+      sharedWorker = new lib.PDFWorker({ name: 'dpg' });
       return lib;
     }).catch((e) => { pdfjsPromise = null; throw e; });
   }
@@ -63,7 +66,7 @@ async function readPdf(file, signal) {
   if (!head.includes('%PDF-')) throw new GradeError('PDF 형식이 아니에요');
 
   const pdfjs = await loadPdfjs();
-  const task = pdfjs.getDocument({ data: new Uint8Array(buf), cMapUrl: CMAP_URL, cMapPacked: true, isEvalSupported: false, disableFontFace: true, useSystemFonts: false, stopAtErrors: false });
+  const task = pdfjs.getDocument({ data: new Uint8Array(buf), worker: sharedWorker, cMapUrl: CMAP_URL, cMapPacked: true, isEvalSupported: false, disableFontFace: true, useSystemFonts: false, stopAtErrors: false });
   const onAbort = () => task.destroy();
   signal?.addEventListener('abort', onAbort, { once: true });
   let doc;
