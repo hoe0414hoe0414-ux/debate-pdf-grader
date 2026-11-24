@@ -1,5 +1,5 @@
-import { parseCriteria, criteriaSignature, EXAMPLE_CRITERIA } from './criteria.js';
-import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js';
+import { parseCriteria, criteriaSignature, EXAMPLE_CRITERIA } from './criteria.js?v=3';
+import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js?v=3';
 
 const LAYOUTS = { auto: '자동', duplex: '양면', simplex: '단면' };
 const $ = (s) => document.querySelector(s);

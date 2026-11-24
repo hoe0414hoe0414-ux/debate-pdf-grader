@@ -1,6 +1,6 @@
 // 서비스 워커: 앱 파일은 '네트워크 우선'(항상 최신), 끊기면 저장본 사용.
 // pdf.js(vendor/)는 용량이 커서 '저장본 우선'으로 두 번째 방문부터 즉시 로딩.
-const CACHE = 'dpg-v1';
+const CACHE = 'dpg-v3';
 const VENDOR = 'dpg-vendor-pdfjs-4.4.168';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
@@ -21,7 +21,8 @@ self.addEventListener('fetch', (e) => {
     }));
     return;
   }
-  e.respondWith(fetch(req).then((res) => {
+  // 브라우저 HTTP 캐시(깃허브 페이지는 10분)를 건너뛰고 항상 서버에 새 버전을 확인
+  e.respondWith(fetch(req, { cache: 'no-cache' }).then((res) => {
     if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
     return res;
   }).catch(() => caches.match(req, { ignoreSearch: true }).then((r) => r || (req.mode === 'navigate' ? caches.match('./index.html') : Response.error()))));
