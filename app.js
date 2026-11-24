@@ -322,7 +322,6 @@ function renderCriteriaState() {
   if (r.ok) {
     const chips = r.items.map((it) => `<span class="chip">${esc(it.name)} <b>${fmtNum(it.points)}점</b></span>`).join('');
     lines.push(`<div class="ok">✓ 결과표에 쓸 채점 항목 ${r.items.length}개 · 총 ${fmtNum(r.total)}점${r.assumed ? ' (자동 지정)' : ''}</div><div class="chips">${chips}</div>`);
-    lines.push('<div class="muted">적은 글 전체가 AI에게 채점 지시문으로 그대로 전달돼요.</div>');
   }
   r.errors.forEach((e) => lines.push(`<div class="err">✕ ${esc(e.msg)}</div>`));
   r.warnings.slice(0, 3).forEach((w) => lines.push(`<div class="warn">! ${esc(w)}</div>`));

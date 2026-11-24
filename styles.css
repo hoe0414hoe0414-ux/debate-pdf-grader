@@ -45,7 +45,7 @@ h1, h2 { margin: 0; }
 .sidebar-foot { margin-top: auto; padding: 0 14px; font-size: 12px; }
 
 /* 본문 */
-.main { flex: 1; min-width: 0; padding: 48px 56px 120px; }
+.main { flex: 1; min-width: 0; padding: 32px 48px 80px; }
 .view { max-width: 1080px; display: flex; flex-direction: column; gap: 24px; }
 .page-head h1 { font-size: 26px; line-height: 1.35; }
 .page-head p { margin: 6px 0 0; color: var(--muted); }
@@ -179,11 +179,32 @@ details.preview pre { white-space: pre-wrap; word-break: break-all; font: 13px/1
 .sec-tab[aria-selected="true"] small { background: var(--primary-soft); color: var(--primary); }
 .sec-tab.add { color: var(--primary); font-weight: 600; }
 .sec-tab:focus-visible { outline: 3px solid rgba(61,90,254,.3); outline-offset: -3px; }
-.sec-body { display: flex; flex-direction: column; gap: 22px; padding-top: 6px; }
-.sec-name-row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
-.field { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 220px; max-width: 420px; }
-.field > span { font-size: 12.5px; font-weight: 700; color: var(--muted); }
-.input { font: inherit; font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); color: var(--text); width: 100%; }
+/* 설정 화면: 촘촘한 2단 배치 */
+#view-settings { gap: 14px; }
+.page-head.compact { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; }
+.id-row { display: flex; align-items: center; gap: 8px; }
+.id-label { font-size: 13px; font-weight: 700; color: var(--muted); margin-right: 2px; }
+.option.sm span { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
+.option.sm input:checked + span { padding: 5px 11px; }
+.section-card { padding: 18px 22px; gap: 10px; }
+.section-card .card-head h2 { margin: 0; font-size: 16px; }
+.sec-body { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(260px, 1fr); gap: 20px; padding-top: 4px; }
+.sec-main, .sec-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sec-side { gap: 14px; }
+.sec-main h3, .sec-side h3 { margin: 0; font-size: 13.5px; }
+.sec-main .textarea { padding: 12px 14px; line-height: 1.65; min-height: 300px; }
+.sec-side .textarea { padding: 10px 12px; line-height: 1.6; }
+.sec-side .sub { padding-top: 0; border-top: 0; gap: 6px; }
+.sec-side .sub.grow { flex: 1; }
+.sec-side .sub.grow .textarea { flex: 1; min-height: 110px; }
+.sec-side .options { gap: 6px; }
+.sec-name-row { display: flex; align-items: center; gap: 6px; }
+.section-card .actions { gap: 8px; flex-wrap: wrap; }
+.section-card .actions .btn { padding: 8px 14px; }
+.section-card .validation { font-size: 13px; }
+.section-card .chips { margin: 4px 0; }
+@media (max-width: 960px) { .sec-body { grid-template-columns: 1fr; } }
+.input { font: inherit; font-size: 14.5px; font-weight: 600; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); color: var(--text); width: 100%; }
 .input:focus { outline: none; border-color: var(--primary); background: var(--surface); box-shadow: 0 0 0 3px rgba(61,90,254,.15); }
 .sub { display: flex; flex-direction: column; gap: 10px; padding-top: 18px; border-top: 1px solid var(--border); }
 .sub h3 { margin: 0; font-size: 15px; }

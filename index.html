@@ -40,51 +40,26 @@
   <main class="main">
     <!-- 설정 -->
     <section class="view" id="view-settings" data-view="settings" hidden>
-      <header class="page-head">
+      <header class="page-head compact">
         <h1>채점 설정</h1>
-        <p>AI가 PDF를 읽을 때 따를 기준을 입력하세요. 저장한 설정은 이 브라우저에 보관됩니다.</p>
-      </header>
-
-      <div class="card">
-        <h2>학번 자릿수</h2>
-        <p class="muted">학교마다 표기법이 달라요. 파일명과 답안지에서 학번을 찾을 때 사용합니다.</p>
-        <div class="options" role="radiogroup" aria-label="학번 자릿수">
-          <label class="option"><input type="radio" name="idDigits" value="4"><span>4자리 <small>(예: 2031)</small></span></label>
-          <label class="option"><input type="radio" name="idDigits" value="5"><span>5자리 <small>(예: 20301)</small></span></label>
+        <div class="id-row" role="radiogroup" aria-label="학번 자릿수">
+          <span class="id-label">학번 자릿수</span>
+          <label class="option sm"><input type="radio" name="idDigits" value="4"><span>4자리 <small>(2031)</small></span></label>
+          <label class="option sm"><input type="radio" name="idDigits" value="5"><span>5자리 <small>(20301)</small></span></label>
         </div>
-      </div>
+      </header>
 
       <div class="card section-card">
         <div class="card-head">
           <h2>평가 영역별 채점 기준</h2>
           <span class="save-state" id="criteria-state"></span>
         </div>
-        <p class="muted">평가 영역(예: 입론서, 반론서, 1학기 토론)마다 탭을 만들어 서로 다른 채점 기준을 쓸 수 있어요. 탭 이름은 업로드 파일·채점 결과 화면에도 똑같이 생겨요.</p>
         <div class="sec-tabs" id="sec-tabs" role="tablist" aria-label="평가 영역"></div>
 
         <div class="sec-body">
-          <div class="sec-name-row">
-            <label class="field">
-              <span>영역 이름</span>
-              <input id="sec-name" class="input" maxlength="30" placeholder="예: 입론서 (1학기)">
-            </label>
-            <button class="btn ghost danger-text" id="sec-delete" type="button">이 영역 삭제</button>
-          </div>
-
-          <div class="sub">
-            <h3>양면 / 단면</h3>
-            <p class="muted">양면은 앞면에만 학번·이름이 있어서 앞+뒤 2쪽을 학생 1명으로 묶어요. 단면은 1쪽이 학생 1명이에요. 섞어 올려도 파일마다 판단하고, 업로드 목록에서 한 번 클릭으로 바꿀 수 있어요.</p>
-            <div class="options" role="radiogroup" aria-label="양면/단면 기본값">
-              <label class="option"><input type="radio" name="layoutDefault" value="auto"><span>자동 판단 <small>(추천)</small></span></label>
-              <label class="option"><input type="radio" name="layoutDefault" value="duplex"><span>모두 양면 <small>(2쪽 = 1명)</small></span></label>
-              <label class="option"><input type="radio" name="layoutDefault" value="simplex"><span>모두 단면 <small>(1쪽 = 1명)</small></span></label>
-            </div>
-          </div>
-
-          <div class="sub">
+          <div class="sec-main">
             <h3>채점 기준</h3>
-            <p class="muted">AI에게 설명하듯 자유롭게 적어 주세요. 평가 이름, 토론 주제, 채점 항목과 배점, 주의할 점 등 무엇이든 괜찮아요. “1. 사회 문제 탐색 : 30점 만점”처럼 점수가 적힌 줄은 결과표의 항목으로 자동 인식돼요. 작성 중인 내용은 자동으로 임시 저장되고, ‘기준 저장’을 누르면 채점에 쓰여요.</p>
-            <textarea id="criteria" class="textarea" rows="16" spellcheck="false" placeholder="## 평가 : 찬반 토론 입론서 작성&#10;&#10;## 토론 주제&#10;…&#10;&#10;1. 사회 문제 탐색 : 30점 만점&#10;학생이 주장하는 바가 명확하고 주제에 맞는가"></textarea>
+            <textarea id="criteria" class="textarea" rows="18" spellcheck="false" placeholder="## 평가 : 찬반 토론 입론서 작성&#10;&#10;## 토론 주제&#10;…&#10;&#10;1. 사회 문제 탐색 : 30점 만점&#10;학생이 주장하는 바가 명확하고 주제에 맞는가"></textarea>
             <div class="validation" id="criteria-validation" aria-live="polite"></div>
             <div class="actions">
               <button class="btn primary" id="criteria-save" type="button">기준 저장</button>
@@ -93,10 +68,28 @@
             </div>
           </div>
 
-          <div class="sub">
-            <h3>판독 참고 사항 <small class="muted">(선택)</small></h3>
-            <p class="muted">AI가 PDF에서 어떤 부분을 읽어야 하는지 적어 주세요. 예: “1쪽 표지는 제외하고 2쪽부터 읽기”, “입론서 칸만 채점”.</p>
-            <textarea id="reading-notes" class="textarea" rows="4" placeholder="예: 각 PDF의 첫 장은 표지이므로 제외하고, 주장·근거·반론 칸만 읽어 주세요."></textarea>
+          <div class="sec-side">
+            <div class="sub">
+              <h3>영역 이름</h3>
+              <div class="sec-name-row">
+                <input id="sec-name" class="input" maxlength="30" placeholder="예: 입론서 (1학기)" aria-label="영역 이름">
+                <button class="btn ghost danger-text small" id="sec-delete" type="button">이 영역 삭제</button>
+              </div>
+            </div>
+
+            <div class="sub">
+              <h3>양면 / 단면</h3>
+              <div class="options" role="radiogroup" aria-label="양면/단면 기본값">
+                <label class="option sm"><input type="radio" name="layoutDefault" value="auto"><span>자동 판단</span></label>
+                <label class="option sm"><input type="radio" name="layoutDefault" value="duplex"><span>모두 양면 <small>(2쪽=1명)</small></span></label>
+                <label class="option sm"><input type="radio" name="layoutDefault" value="simplex"><span>모두 단면 <small>(1쪽=1명)</small></span></label>
+              </div>
+            </div>
+
+            <div class="sub grow">
+              <h3>판독 참고 사항 <small class="muted">(선택)</small></h3>
+              <textarea id="reading-notes" class="textarea" rows="5" placeholder="예: 첫 장은 표지이므로 제외하고, 주장·근거·반론 칸만 읽어 주세요."></textarea>
+            </div>
           </div>
         </div>
       </div>
