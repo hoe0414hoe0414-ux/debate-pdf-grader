@@ -1,6 +1,8 @@
 import { parseCriteria, criteriaSignature, EXAMPLE_CRITERIA } from './criteria.js';
 import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js';
 
+const LAYOUTS = { auto: '자동', duplex: '양면', simplex: '단면' };
+
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const collator = new Intl.Collator('ko', { numeric: true, sensitivity: 'base' });
@@ -24,6 +26,7 @@ const state = {
   criteria: Array.isArray(saved.criteria) ? saved.criteria : [],
   savedAt: saved.savedAt || null,
   notes: typeof saved.notes === 'string' ? saved.notes : '',
+  layoutDefault: ['auto', 'duplex', 'simplex'].includes(saved.layoutDefault) ? saved.layoutDefault : 'auto',
   files: new Map(),   // id -> 파일 항목
   order: [],          // 정렬된 id 목록
   resultTab: 'all',
@@ -35,9 +38,13 @@ const queue = [];
 let running = 0;
 
 function persist() {
-  return store.set(KEY, { idDigits: state.idDigits, criteriaText: state.criteriaText, criteria: state.criteria, savedAt: state.savedAt, notes: state.notes });
+  return store.set(KEY, { idDigits: state.idDigits, criteriaText: state.criteriaText, criteria: state.criteria, savedAt: state.savedAt, notes: state.notes, layoutDefault: state.layoutDefault });
 }
 const settingsSig = () => `${state.idDigits}\u0003${criteriaSignature(state.criteria)}\u0003${state.notes}`;
+// 파일마다 고른 양면/단면 (null이면 설정의 기본값을 따름)
+const layoutChoice = (f) => f.layout || state.layoutDefault;
+const fileSig = (f) => `${settingsSig()}\u0003${layoutChoice(f)}`;
+const isStale = (f) => !!f.sig && f.sig !== fileSig(f);
 
 // ── 렌더링 예약 (한 프레임에 한 번만 다시 그림) ──────────────────────────────
 const dirty = new Set();
@@ -94,6 +101,15 @@ function initSettings() {
       persist();
       markStale();
       toast(`학번을 ${state.idDigits}자리로 저장했어요.`);
+    });
+  });
+  document.querySelectorAll('input[name="layoutDefault"]').forEach((r) => {
+    r.checked = r.value === state.layoutDefault;
+    r.addEventListener('change', () => {
+      state.layoutDefault = r.value;
+      persist();
+      markStale();
+      toast(`양면/단면 기본값을 ‘${LAYOUTS[r.value]}’(으)로 저장했어요.`);
     });
   });
   const draft = store.get(DRAFT_KEY);
@@ -165,11 +181,7 @@ function saveCriteria() {
 }
 
 function markStale() {
-  const sig = settingsSig();
-  let any = false;
-  for (const f of state.files.values()) if (f.result && f.sig !== sig) any = true;
   invalidate('files', 'results');
-  return any;
 }
 
 // ── 파일 업로드 ───────────────────────────────────────────────────────────
@@ -185,7 +197,7 @@ function addFiles(list) {
     if (keys.has(k)) { dup++; continue; }
     keys.add(k);
     const id = `f${++seq}`;
-    state.files.set(id, { id, file, name: file.name, size: file.size, status: 'pending', result: null, error: '', sig: null });
+    state.files.set(id, { id, file, name: file.name, size: file.size, status: 'pending', result: null, error: '', sig: null, layout: null });
     added++;
     queue.push(id);
   }
@@ -231,26 +243,45 @@ async function run(f) {
   const ctrl = new AbortController();
   f.abort = ctrl; f.status = 'grading'; f.error = '';
   invalidate('files', 'badges');
-  const sig = settingsSig();
-  const opts = { criteria: state.criteria, idDigits: state.idDigits, notes: state.notes };
+  const sig = fileSig(f);
+  const opts = { criteria: state.criteria, idDigits: state.idDigits, notes: state.notes, layout: layoutChoice(f) };
   try {
     const res = await gradeFile(f.file, opts, ctrl.signal);
-    if (state.files.get(f.id) !== f) return; // 도중에 삭제됨
-    f.result = res; f.sig = sig; f.status = res.status; f.error = res.reason || '';
+    if (state.files.get(f.id) !== f || f.abort !== ctrl) return; // 도중에 삭제되었거나 다시 채점 시작됨
+    const ok = res.students.filter((st) => st.status === 'success').length;
+    f.result = res; f.sig = sig;
+    f.status = ok ? 'success' : 'fail';
+    f.error = ok ? '' : (res.students[0]?.reason || '판독 불가');
   } catch (e) {
-    if (e?.name === 'AbortError' || state.files.get(f.id) !== f) return;
+    if (e?.name === 'AbortError' || state.files.get(f.id) !== f || f.abort !== ctrl) return;
     // 열지 못한 파일도 파일명에서 학번·이름은 찾아 표에 보여 준다
-    f.result = { studentId: extractStudentId(f.name, opts.idDigits), name: extractName(f.name, ''), scores: null, total: null, mode: null, pages: null };
+    f.result = { pages: null, layout: null, layoutAuto: false, students: [{ idx: 1, pages: [], pageLabel: '', studentId: extractStudentId(f.name, opts.idDigits), name: extractName(f.name, ''), status: 'fail', scores: null, total: null, mode: null }] };
     f.sig = sig; f.status = 'fail';
     f.error = e instanceof GradeError ? e.message : '읽는 중 문제가 생겼어요';
     if (!(e instanceof GradeError)) console.error(e);
   } finally {
     running--;
-    f.abort = null;
+    if (f.abort === ctrl) f.abort = null;
     invalidate('files', 'results', 'badges');
     // 다음 작업은 다음 틱에 시작해 화면이 숨 쉴 틈을 준다
     setTimeout(pump, 0);
   }
+}
+function regradeOne(f) {
+  if (f.abort) f.abort.abort();
+  f.abort = null;
+  f.status = 'pending'; f.result = null; f.error = '';
+  if (!queue.includes(f.id)) queue.unshift(f.id);
+  invalidate('files', 'results', 'badges');
+  pump();
+}
+function setLayout(id, value) {
+  const f = state.files.get(id);
+  if (!f) return;
+  const next = value === state.layoutDefault ? null : value;
+  if (layoutChoice(f) === value && f.layout === next) return;
+  f.layout = next;
+  if (canGrade()) regradeOne(f); else invalidate('files');
 }
 function regradeAll() {
   if (!canGrade()) { toast('채점 기준을 먼저 저장해 주세요.'); return; }
@@ -270,26 +301,45 @@ const X_ICON = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 2l10 10M
 
 function statusText(f) {
   switch (f.status) {
-    case 'success': return '채점 완료 · 결과 보기';
+    case 'success': {
+      const st = f.result.students;
+      const bad = st.filter((x) => x.status !== 'success').length;
+      return `채점 완료 · 학생 ${st.length}명${bad ? ` (채점 불가 ${bad}명)` : ''} · 결과 보기`;
+    }
     case 'fail': return `채점 실패 · ${f.error || '판독 불가'}`;
     case 'grading': return '채점 중…';
     default: return canGrade() ? '대기 중' : '기준 저장 후 채점';
   }
 }
 function counts() {
-  let s = 0, x = 0, p = 0;
-  for (const f of state.files.values()) { if (f.status === 'success') s++; else if (f.status === 'fail') x++; else p++; }
-  return { s, x, p, n: state.files.size };
+  let s = 0, x = 0, p = 0, students = 0;
+  for (const f of state.files.values()) {
+    if (f.status === 'success') s++; else if (f.status === 'fail') x++; else p++;
+    if (f.result) students += f.result.students.length;
+  }
+  return { s, x, p, n: state.files.size, students };
 }
+// 양면/단면 선택 버튼 (한 번 클릭으로 전환)
+function layoutSeg(f) {
+  const cur = layoutChoice(f);
+  const detected = f.result?.layoutAuto ? f.result.layout : null;
+  const btn = (v) => {
+    const label = v === 'auto' && detected ? `자동(${LAYOUTS[detected]})` : LAYOUTS[v];
+    const tip = v === 'auto' ? (f.result?.layoutReason ? `자동 판단: ${f.result.layoutReason}` : '파일을 보고 양면/단면을 자동으로 판단') : v === 'duplex' ? '양면: 2쪽(앞+뒤)을 학생 1명으로 채점' : '단면: 1쪽을 학생 1명으로 채점';
+    return `<button type="button" data-layout="${v}" aria-pressed="${cur === v}" title="${esc(tip)}">${esc(label)}</button>`;
+  };
+  return `<span class="seg" role="group" aria-label="양면/단면" data-seg="${f.id}">${btn('auto')}${btn('duplex')}${btn('simplex')}</span>`;
+}
+function rowKey(f) { return `${f.status}|${statusText(f)}|${layoutChoice(f)}|${f.result?.layout || ''}`; }
+
 function renderFiles() {
   const c = counts();
-  $('#files-summary').textContent = c.n ? `파일 ${c.n}개 · 성공 ${c.s} · 실패 ${c.x}${c.p ? ` · 대기/진행 ${c.p}` : ''}` : '아직 올린 파일이 없어요.';
+  $('#files-summary').textContent = c.n ? `파일 ${c.n}개 · 학생 ${c.students}명 · 성공 ${c.s} · 실패 ${c.x}${c.p ? ` · 대기/진행 ${c.p}` : ''}` : '아직 올린 파일이 없어요.';
   $('#regrade-all').hidden = !c.n;
   $('#clear-all').hidden = !c.n;
 
   const notice = $('#files-notice');
-  const sig = settingsSig();
-  const stale = [...state.files.values()].some((f) => f.result && f.sig !== sig || (f.status === 'fail' && f.sig && f.sig !== sig));
+  const stale = [...state.files.values()].some(isStale);
   if (!canGrade() && c.n) {
     notice.innerHTML = '채점 기준이 아직 저장되지 않아 채점을 시작하지 않았어요. <a href="#settings">설정으로 이동</a>';
     notice.hidden = false;
@@ -301,9 +351,11 @@ function renderFiles() {
   const ul = $('#file-list');
   const rowHtml = (f) => {
     const link = f.status === 'success' || f.status === 'fail';
+    const pages = f.result?.pages ? `${f.result.pages}쪽` : fmtSize(f.size);
     return `<span class="dot"></span>
       <span class="name" title="${esc(f.name)}">${esc(f.name)}</span>
-      <span class="size">${fmtSize(f.size)}</span>
+      ${layoutSeg(f)}
+      <span class="size">${pages}</span>
       ${link ? `<button type="button" class="status" data-link="${f.id}">${esc(statusText(f))}</button>` : `<span class="status">${esc(statusText(f))}</span>`}
       <button type="button" class="remove" data-remove="${f.id}" aria-label="${esc(f.name)} 업로드 취소" title="업로드 취소">${X_ICON}</button>`;
   };
@@ -311,14 +363,14 @@ function renderFiles() {
   if (ul.dataset.v === String(listVersion)) {
     for (const li of ul.children) {
       const f = state.files.get(li.dataset.id);
-      const key = `${f.status}|${statusText(f)}`;
+      const key = rowKey(f);
       if (li.dataset.k !== key) { li.className = `file-row ${f.status}`; li.dataset.k = key; li.innerHTML = rowHtml(f); }
     }
     return;
   }
   ul.innerHTML = state.order.map((id) => {
     const f = state.files.get(id);
-    return `<li class="file-row ${f.status}" data-id="${id}" data-k="${esc(`${f.status}|${statusText(f)}`)}">${rowHtml(f)}</li>`;
+    return `<li class="file-row ${f.status}" data-id="${id}" data-k="${esc(rowKey(f))}">${rowHtml(f)}</li>`;
   }).join('');
   ul.dataset.v = String(listVersion);
 }
@@ -326,20 +378,15 @@ function renderBadges() {
   const c = counts();
   const bf = $('#badge-files'), br = $('#badge-results');
   bf.hidden = !c.n; bf.textContent = c.n;
-  br.hidden = !(c.s + c.x); br.textContent = c.s + c.x;
+  br.hidden = !c.students; br.textContent = c.students;
 }
 
 // ── 결과 화면 렌더링 ──────────────────────────────────────────────────────
 const fmt = (n) => (n == null ? '' : Number.isInteger(n) ? String(n) : n.toFixed(1));
 const total = () => state.criteria.reduce((s, c) => s + c.points, 0);
 const BAD = '(채점 불가)';
-
-function scoreFor(f, crit) {
-  const r = f.result;
-  if (!r || !r.scores) return null;
-  const hit = r.scores.find((x) => x.name === crit.name);
-  return hit ? hit.score : undefined;
-}
+const scoreOf = (st, crit) => { const hit = st.scores?.find((x) => x.name === crit.name); return hit ? hit.score : undefined; };
+const studentLabel = (f, st) => st.name || (f.result.students.length > 1 ? `학생 ${st.idx}` : '');
 
 function renderResults() {
   const tabs = $('#result-tabs');
@@ -347,8 +394,7 @@ function renderResults() {
   const ids = state.order;
   $('#export-csv').hidden = !ids.length;
 
-  const sig = settingsSig();
-  const anyStale = ids.some((id) => { const f = state.files.get(id); return f.sig && f.sig !== sig; });
+  const anyStale = ids.some((id) => isStale(state.files.get(id)));
   const notice = $('#results-notice');
   notice.hidden = !anyStale;
   if (anyStale) notice.innerHTML = '설정이 바뀌어 일부 점수는 이전 기준으로 매겨졌어요. <button type="button" class="btn small" data-act="regrade">새 기준으로 다시 채점</button>';
@@ -364,7 +410,8 @@ function renderResults() {
     .concat(ids.map((id) => {
       const f = state.files.get(id);
       const cls = f.status === 'success' ? 'success' : f.status === 'fail' ? 'fail' : '';
-      return `<button type="button" class="tab" role="tab" data-tab="${id}" aria-selected="${state.resultTab === id}" title="${esc(f.name)}"><span class="tdot ${cls}"></span>${esc(f.name.replace(/\.pdf$/i, ''))}</button>`;
+      const n = f.result?.students.length;
+      return `<button type="button" class="tab" role="tab" data-tab="${id}" aria-selected="${state.resultTab === id}" title="${esc(f.name)}"><span class="tdot ${cls}"></span>${esc(f.name.replace(/\.pdf$/i, ''))}${n > 1 ? ` <small class="muted">${n}명</small>` : ''}</button>`;
     })).join('');
   // 선택된 탭이 보이도록 탭 줄만 가로로 이동 (페이지 전체는 움직이지 않음)
   const sel = tabs.querySelector('[aria-selected="true"]');
@@ -383,27 +430,31 @@ function renderResults() {
   if (keep && next) { next.scrollTop = keep[0]; next.scrollLeft = keep[1]; }
 }
 
+function scoreCells(st) {
+  const crit = state.criteria;
+  if (st.status !== 'success') return crit.map(() => `<td class="num bad">${BAD}</td>`).join('') + `<td class="num total bad">${BAD}</td>`;
+  return crit.map((c) => { const v = scoreOf(st, c); return v == null ? '<td class="num pending">–</td>' : `<td class="num">${fmt(v)}</td>`; }).join('')
+    + `<td class="num total">${fmt(st.total)}${st.mode === 'scan-demo' ? '<span class="demo-tag">데모</span>' : ''}</td>`;
+}
+
 function renderAllTable(ids) {
   const crit = state.criteria;
-  const head = `<tr><th>학번</th><th>이름</th><th>파일</th>${crit.map((c) => `<th class="num">${esc(c.name)} (${fmt(c.points)})</th>`).join('')}<th class="num">총점 (${fmt(total())})</th></tr>`;
-  const rows = ids.map((id) => {
-    const f = state.files.get(id);
-    const r = f.result;
-    let cells;
-    if (f.status === 'fail') {
-      cells = crit.map(() => `<td class="num bad">${BAD}</td>`).join('') + `<td class="num total bad">${BAD}</td>`;
-    } else if (f.status === 'success') {
-      cells = crit.map((c) => { const v = scoreFor(f, c); return v == null ? '<td class="num pending">–</td>' : `<td class="num">${fmt(v)}</td>`; }).join('')
-        + `<td class="num total">${fmt(r.total)}${r.mode === 'scan-demo' ? '<span class="demo-tag">데모</span>' : ''}</td>`;
-    } else {
-      const label = f.status === 'grading' ? '채점 중…' : '대기 중';
-      cells = crit.map(() => `<td class="num pending">${label}</td>`).join('') + `<td class="num pending">${label}</td>`;
-    }
-    return `<tr class="clickable" data-tab="${id}"><td>${esc(r?.studentId || '–')}</td><td>${esc(r?.name || '–')}</td><td>${esc(f.name)}</td>${cells}</tr>`;
-  }).join('');
   if (!crit.length) return '<div class="empty">채점 기준이 없어요. <a href="#settings">설정</a>에서 기준을 저장해 주세요.</div>';
-  return `<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>
-    <p class="muted" style="margin:0">※ 빨간색 ${BAD}는 AI가 학생이 쓴 글을 해석하지 못한 경우예요. 원본 PDF를 직접 확인해 주세요. ‘데모’ 표시는 스캔본에 임시 점수를 보여 준 것입니다.</p>`;
+  const head = `<tr><th>학번</th><th>이름</th><th>파일</th><th>쪽</th>${crit.map((c) => `<th class="num">${esc(c.name)} (${fmt(c.points)})</th>`).join('')}<th class="num">총점 (${fmt(total())})</th></tr>`;
+  const rows = [];
+  for (const id of ids) {
+    const f = state.files.get(id);
+    if (!f.result) {
+      const label = f.status === 'grading' ? '채점 중…' : '대기 중';
+      rows.push(`<tr class="clickable" data-tab="${id}"><td>–</td><td>–</td><td>${esc(f.name)}</td><td>–</td>${crit.map(() => `<td class="num pending">${label}</td>`).join('')}<td class="num pending">${label}</td></tr>`);
+      continue;
+    }
+    for (const st of f.result.students) {
+      rows.push(`<tr class="clickable" data-tab="${id}"><td>${esc(st.studentId || '–')}</td><td>${esc(studentLabel(f, st) || '–')}</td><td>${esc(f.name)}</td><td>${esc(st.pageLabel || '–')}</td>${scoreCells(st)}</tr>`);
+    }
+  }
+  return `<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows.join('')}</tbody></table></div>
+    <p class="muted" style="margin:0">※ 빨간색 ${BAD}는 AI가 학생이 쓴 글을 해석하지 못한 경우예요. 원본 PDF를 직접 확인해 주세요. ‘데모’ 표시는 스캔본에 임시 점수를 보여 준 것입니다. 양면은 2쪽(앞+뒤)을 학생 1명으로 채점해요.</p>`;
 }
 
 function renderDetail(f) {
@@ -412,38 +463,61 @@ function renderDetail(f) {
   if (f.status !== 'success' && f.status !== 'fail') {
     return `<div class="empty">${f.status === 'grading' ? '채점 중이에요…' : '아직 채점하지 않았어요.'}</div>`;
   }
-  const modeLabel = !r?.mode ? '–' : r.mode === 'text' ? '글자 PDF (본문 판독)' : r.mode === 'ai' ? 'AI 판독' : '스캔본 (데모 점수)';
-  const top = `<div class="detail-grid">
-    ${stat('학번', esc(r?.studentId || '찾지 못함'))}
-    ${stat('이름', esc(r?.name || '찾지 못함'))}
-    ${stat('총점', f.status === 'fail' ? BAD : `${fmt(r.total)} / ${fmt(total())}`, f.status === 'fail' ? 'bad' : 'good')}
-    ${stat('판독 방식', `<span style="font-size:15px">${modeLabel}${r?.pages ? ` · ${r.pages}쪽` : ''}</span>`)}
-  </div>`;
   const reason = f.status === 'fail' ? `<div class="notice warn">채점 실패: ${esc(f.error || '판독 불가')}</div>` : '';
-  const rows = state.criteria.map((c) => {
-    const s = r?.scores?.find((x) => x.name === c.name);
-    const val = f.status === 'fail' ? `<td class="num bad">${BAD}</td>` : s ? `<td class="num total">${fmt(s.score)}</td>` : '<td class="num pending">–</td>';
-    return `<tr><td>${esc(c.name)}</td><td class="num">${fmt(c.points)}</td>${val}<td class="wrap">${esc(s?.comment || c.desc || '')}</td></tr>`;
-  }).join('');
-  const table = `<div class="table-wrap"><table><thead><tr><th>채점 항목</th><th class="num">배점</th><th class="num">점수</th><th>근거</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-  const preview = r?.textPreview ? `<details class="preview"><summary>AI가 읽은 본문 미리보기</summary><pre>${esc(r.textPreview)}</pre></details>` : '';
-  return `<div class="stack">${reason}${top}${table}${preview}</div>`;
+  const layoutTxt = r.layout ? `${LAYOUTS[r.layout]}${r.layoutAuto ? ' (자동 판단)' : ' (직접 지정)'}` : '–';
+  const sts = r.students;
+
+  if (sts.length === 1) {
+    const st = sts[0];
+    const modeLabel = !st.mode ? '–' : st.mode === 'text' ? '글자 PDF' : st.mode === 'ai' ? 'AI 판독' : '스캔본 (데모 점수)';
+    const top = `<div class="detail-grid">
+      ${stat('학번', esc(st.studentId || '찾지 못함'))}
+      ${stat('이름', esc(st.name || '찾지 못함'))}
+      ${stat('총점', st.status !== 'success' ? BAD : `${fmt(st.total)} / ${fmt(total())}`, st.status !== 'success' ? 'bad' : 'good')}
+      ${stat('판독 방식', `<span style="font-size:15px">${modeLabel}${r.pages ? ` · ${r.pages}쪽 · ${layoutTxt}` : ''}</span>`)}
+    </div>`;
+    const rows = state.criteria.map((c) => {
+      const s = st.scores?.find((x) => x.name === c.name);
+      const val = st.status !== 'success' ? `<td class="num bad">${BAD}</td>` : s ? `<td class="num total">${fmt(s.score)}</td>` : '<td class="num pending">–</td>';
+      return `<tr><td>${esc(c.name)}</td><td class="num">${fmt(c.points)}</td>${val}<td class="wrap">${esc(s?.comment || c.desc || '')}</td></tr>`;
+    }).join('');
+    const table = `<div class="table-wrap"><table><thead><tr><th>채점 항목</th><th class="num">배점</th><th class="num">점수</th><th>근거</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    const preview = st.textPreview ? `<details class="preview"><summary>AI가 읽은 본문 미리보기</summary><pre>${esc(st.textPreview)}</pre></details>` : '';
+    return `<div class="stack">${reason}${top}${table}${preview}</div>`;
+  }
+
+  // 한 파일에 학생이 여러 명 (반 전체를 한 번에 스캔한 경우)
+  const ok = sts.filter((x) => x.status === 'success').length;
+  const top = `<div class="detail-grid">
+    ${stat('학생 수', `${sts.length}명`)}
+    ${stat('채점 완료', `${ok}명`, 'good')}
+    ${stat('채점 불가', `${sts.length - ok}명`, sts.length - ok ? 'bad' : '')}
+    ${stat('나눈 방식', `<span style="font-size:15px">${layoutTxt} · ${r.pages}쪽</span>`)}
+  </div>`;
+  const crit = state.criteria;
+  const head = `<tr><th>#</th><th>쪽</th><th>학번</th><th>이름</th>${crit.map((c) => `<th class="num">${esc(c.name)} (${fmt(c.points)})</th>`).join('')}<th class="num">총점 (${fmt(total())})</th></tr>`;
+  const rows = sts.map((st) => `<tr><td>${st.idx}</td><td>${esc(st.pageLabel)}</td><td>${esc(st.studentId || '–')}</td><td>${esc(studentLabel(f, st) || '–')}</td>${scoreCells(st)}</tr>`).join('');
+  const hint = r.layoutAuto ? `<p class="muted" style="margin:0">학생 나누기가 틀렸다면 <a href="#files">업로드 파일</a>에서 이 파일의 ‘양면/단면’ 버튼을 눌러 바꿔 주세요. 판단 근거: ${esc(r.layoutReason)}</p>` : '';
+  return `<div class="stack">${reason}${top}<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>${hint}</div>`;
 }
 
 // ── CSV(엑셀) 내보내기 ────────────────────────────────────────────────────
 function exportCsv() {
   const q = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const crit = state.criteria;
-  const rows = [['학번', '이름', '파일', ...crit.map((c) => `${c.name}(${c.points})`), `총점(${total()})`, '상태']];
+  const rows = [['학번', '이름', '파일', '쪽', ...crit.map((c) => `${c.name}(${c.points})`), `총점(${total()})`, '상태']];
   for (const id of state.order) {
-    const f = state.files.get(id); const r = f.result;
-    const bad = f.status === 'fail';
-    rows.push([
-      r?.studentId ? `="${r.studentId}"` : '', r?.name || '', f.name,
-      ...crit.map((c) => (bad ? BAD : fmt(scoreFor(f, c)) || '')),
-      bad ? BAD : r ? fmt(r.total) : '',
-      bad ? `실패: ${f.error}` : f.status === 'success' ? (r.mode === 'scan-demo' ? '성공(데모 점수)' : '성공') : '대기',
-    ]);
+    const f = state.files.get(id);
+    if (!f.result) { rows.push(['', '', f.name, '', ...crit.map(() => ''), '', '대기']); continue; }
+    for (const st of f.result.students) {
+      const bad = st.status !== 'success';
+      rows.push([
+        st.studentId ? `="${st.studentId}"` : '', studentLabel(f, st), f.name, st.pageLabel,
+        ...crit.map((c) => (bad ? BAD : fmt(scoreOf(st, c)))),
+        bad ? BAD : fmt(st.total),
+        bad ? `실패: ${st.reason || f.error}` : st.mode === 'scan-demo' ? '성공(데모 점수)' : '성공',
+      ]);
+    }
   }
   const csv = '﻿' + rows.map((r) => r.map((v, i) => (i === 0 && String(v).startsWith('="') ? v : q(v))).join(',')).join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -477,6 +551,8 @@ function initEvents() {
   $('#file-list').addEventListener('click', (e) => {
     const rm = e.target.closest('[data-remove]');
     if (rm) { removeFile(rm.dataset.remove); return; }
+    const lb = e.target.closest('[data-layout]');
+    if (lb) { setLayout(lb.closest('[data-seg]').dataset.seg, lb.dataset.layout); return; }
     const ln = e.target.closest('[data-link]');
     if (ln) location.hash = `#results/${ln.dataset.link}`;
   });

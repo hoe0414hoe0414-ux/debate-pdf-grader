@@ -26,6 +26,7 @@ body { background: var(--bg); color: var(--text); font: 14px/1.6 var(--font); -w
 code { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; font-size: 12.5px; }
 small { font-weight: 400; }
 .muted { color: var(--muted); }
+a { color: var(--primary); }
 h1, h2 { margin: 0; }
 
 .layout { display: flex; min-height: 100vh; }
@@ -120,10 +121,19 @@ h1, h2 { margin: 0; }
 
 .empty { padding: 48px 24px; text-align: center; color: var(--muted); background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius); }
 
+/* 양면/단면 선택 */
+.seg { display: inline-flex; flex: none; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden; }
+.seg button { font: inherit; font-size: 12.5px; font-weight: 500; padding: 4px 10px; border: 0; background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button:hover { background: var(--bg); color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
+.file-row.grading .seg { opacity: .6; }
+
 /* 결과 탭 */
 .tabs-row { display: flex; align-items: center; gap: 12px; }
 .tabs { display: flex; gap: 6px; overflow-x: auto; flex: 1; min-width: 0; padding: 2px; scrollbar-width: thin; }
 .tab { flex: none; font: inherit; font-weight: 500; padding: 9px 18px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
+.tab small { font-weight: 500; }
 .tab .tdot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .tab .tdot.success { background: var(--success); }
 .tab .tdot.fail { background: var(--danger); }

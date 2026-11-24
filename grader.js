@@ -7,7 +7,7 @@
 // 실제 AI를 붙일 때는 아래 aiGrade() 한 곳만 바꾸면 됩니다. API 키는 절대 이 파일(공개 저장소)에 넣지 마세요.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAX_PAGES = 30;          // 한 파일에서 읽을 최대 쪽수 (속도 보호)
+const MAX_PAGES = 300;         // 한 파일에서 읽을 최대 쪽수 (반 전체를 한 번에 스캔한 파일 대비)
 const MIN_TEXT_CHARS = 40;     // 이보다 글자가 적으면 스캔본으로 간주
 
 const CMAP_URL = new URL('./vendor/pdfjs/cmaps/', import.meta.url).href; // 한글 등 CJK 글꼴 글자 해석용 (필요한 파일만 받아옴)
@@ -59,7 +59,66 @@ export function extractName(fileName, text) {
   return '';
 }
 
-async function readPdf(file, signal) {
+// ── 양면/단면 판단 ──────────────────────────────────────────────────────────
+// 글자가 있는 PDF: 학번이 적힌 쪽이 새 학생의 시작. 학번 없는 쪽(양면의 뒷면)은 앞 학생에 붙는다.
+// 스캔본: 앞쪽 몇 장만 아주 작게(가로 40px) 그려서 비교한다.
+//   양면이면 앞면(학번·이름 칸) - 뒷면 - 앞면 - 뒷면 … 처럼 한 장 건너 모양이 닮고, 바로 옆 장과는 다르다.
+//   단면이면 모든 장이 같은 양식이라 서로 닮는다. 비어 있는 뒷면도 이 방법으로 잡힌다.
+const THUMB_W = 40;
+const SAMPLE_PAGES = 8;
+
+async function pageThumb(page) {
+  const vp1 = page.getViewport({ scale: 1 });
+  const vp = page.getViewport({ scale: THUMB_W / vp1.width });
+  const w = THUMB_W, h = Math.max(1, Math.round(vp.height));
+  const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+  await page.render({ canvasContext: ctx, viewport: vp, intent: 'display' }).promise;
+  const px = ctx.getImageData(0, 0, w, h).data;
+  const ink = new Float32Array(w * h);
+  let total = 0;
+  for (let i = 0; i < ink.length; i++) { const v = 1 - (px[i * 4] * 0.299 + px[i * 4 + 1] * 0.587 + px[i * 4 + 2] * 0.114) / 255; ink[i] = v; total += v; }
+  return { ink, w, h, inkRatio: total / ink.length };
+}
+// 윗부분(학번·이름 칸이 있는 곳) 35%의 모양 차이
+function headDiff(a, b) {
+  const rows = Math.floor(Math.min(a.h, b.h) * 0.35);
+  let d = 0;
+  for (let y = 0; y < rows; y++) for (let x = 0; x < a.w; x++) d += Math.abs(a.ink[y * a.w + x] - b.ink[y * b.w + x]);
+  return d / Math.max(1, rows * a.w);
+}
+export function guessLayoutFromThumbs(th) {
+  const n = th.length;
+  if (n < 2) return { layout: 'simplex', reason: '1쪽짜리 파일' };
+  const blankBacks = th.filter((t, i) => i % 2 === 1 && t.inkRatio < 0.012).length;
+  if (blankBacks && blankBacks >= Math.floor(n / 2)) return { layout: 'duplex', reason: '뒷면이 비어 있는 양면 스캔' };
+  if (n === 2) {
+    const d = headDiff(th[0], th[1]);
+    if (globalThis.__dpgDebug) console.log('headDiff2', d);
+    return d > 0.016 ? { layout: 'duplex', reason: '앞뒤 두 쪽의 양식이 서로 다름' } : { layout: 'simplex', reason: '두 쪽의 양식이 같음' };
+  }
+  let adj = 0, na = 0, skip = 0, ns = 0;
+  for (let i = 0; i + 1 < n; i++) { adj += headDiff(th[i], th[i + 1]); na++; }
+  for (let i = 0; i + 2 < n; i++) { skip += headDiff(th[i], th[i + 2]); ns++; }
+  adj /= na; skip /= ns;
+  if (globalThis.__dpgDebug) console.log('adj/skip', adj, skip);
+  return adj > skip * 1.6 + 0.004
+    ? { layout: 'duplex', reason: '한 장 건너 양식이 반복됨' }
+    : { layout: 'simplex', reason: '모든 쪽의 양식이 같음' };
+}
+
+export function groupPages(pageCount, layout) {
+  const size = layout === 'duplex' ? 2 : 1;
+  const groups = [];
+  for (let p = 1; p <= pageCount; p += size) groups.push(Array.from({ length: Math.min(size, pageCount - p + 1) }, (_, i) => p + i));
+  return groups;
+}
+
+const countIdPages = (texts, digits) => texts.reduce((n, t) => n + (extractStudentId(t, digits) ? 1 : 0), 0);
+
+async function readPdf(file, { layout, idDigits }, signal) {
+  const fileName = file.name;
   const buf = await file.arrayBuffer();
   if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
   const head = new TextDecoder('latin1').decode(new Uint8Array(buf, 0, Math.min(1024, buf.byteLength)));
@@ -78,19 +137,54 @@ async function readPdf(file, signal) {
     throw new GradeError('파일이 손상되어 열 수 없어요');
   }
   try {
-    const pages = doc.numPages;
-    const n = Math.min(pages, MAX_PAGES);
-    const parts = [];
-    for (let p = 1; p <= n; p++) {
+    const pageCount = Math.min(doc.numPages, MAX_PAGES);
+    const texts = [];
+    for (let p = 1; p <= pageCount; p++) {
       if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
       const page = await doc.getPage(p);
       const tc = await page.getTextContent();
       let s = '';
       for (const it of tc.items) { if ('str' in it) s += it.str + (it.hasEOL ? '\n' : ''); }
-      parts.push(s);
+      texts.push(s.replace(/[ \t]+/g, ' ').trim());
       page.cleanup();
     }
-    return { pages, text: parts.join('\n').replace(/[ \t]+/g, ' ').trim() };
+    const textPages = texts.filter((t) => t.replace(/\s/g, '').length >= MIN_TEXT_CHARS).length;
+    const hasText = textPages >= Math.ceil(pageCount / 2);
+
+    let groups, detected = null;
+    if (layout === 'duplex' || layout === 'simplex') {
+      groups = groupPages(pageCount, layout);
+    } else if (hasText && countIdPages(texts, idDigits) >= 2) {
+      // 학번이 적힌 쪽마다 새 학생
+      const starts = [];
+      texts.forEach((t, i) => { if (extractStudentId(t, idDigits)) starts.push(i + 1); });
+      {
+        groups = [];
+        starts.forEach((st, i) => {
+          const from = i === 0 ? 1 : st;
+          const to = i + 1 < starts.length ? starts[i + 1] - 1 : pageCount;
+          groups.push(Array.from({ length: to - from + 1 }, (_, k) => from + k));
+        });
+        const sizes = new Set(groups.map((g) => g.length));
+        detected = { layout: sizes.size === 1 && sizes.has(1) ? 'simplex' : 'duplex', reason: '쪽마다 적힌 학번으로 학생을 나눔' };
+      }
+    } else if (hasText || extractStudentId(fileName, idDigits) || pageCount === 1) {
+      // 파일 이름에 학번이 있거나 본문에 학번이 한 번뿐 → 학생 한 명의 파일
+      groups = [Array.from({ length: pageCount }, (_, k) => k + 1)];
+      detected = { layout: pageCount >= 2 ? 'duplex' : 'simplex', reason: pageCount === 1 ? '1쪽짜리 파일' : extractStudentId(fileName, idDigits) ? '파일 이름에 학번이 있어 학생 한 명의 파일로 봄' : '학번이 한 번만 나와 학생 한 명으로 봄' };
+    } else {
+      const k = Math.min(pageCount, SAMPLE_PAGES);
+      const th = [];
+      for (let p = 1; p <= k; p++) {
+        if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
+        const page = await doc.getPage(p);
+        th.push(await pageThumb(page));
+        page.cleanup();
+      }
+      detected = guessLayoutFromThumbs(th);
+      groups = groupPages(pageCount, detected.layout);
+    }
+    return { pageCount, totalPages: doc.numPages, texts, hasText, groups, detected };
   } finally {
     signal?.removeEventListener('abort', onAbort);
     doc.destroy();
@@ -134,24 +228,44 @@ function demoScanGrade(seedStr, criteria) {
  * 여기서 fetch로 { 기준, 참고사항, PDF 텍스트 또는 페이지 이미지 }를 보내 점수를 받아오면 됩니다.
  * null을 돌려주면 아래 데모 채점이 사용됩니다.
  */
-async function aiGrade(/* { file, text, criteria, notes, signal } */) {
+async function aiGrade(/* { file, pages, text, criteria, notes, signal } — pages: 이 학생의 쪽 번호 배열 */) {
   return null;
 }
 
-export async function gradeFile(file, { criteria, idDigits, notes }, signal) {
-  const { pages, text } = await readPdf(file, signal);
-  const studentId = extractStudentId(file.name, idDigits) || extractStudentId(text, idDigits);
-  const name = extractName(file.name, text);
-  const hasText = text.replace(/\s/g, '').length >= MIN_TEXT_CHARS;
+const pageLabel = (pages) => (pages.length === 1 ? `${pages[0]}쪽` : `${pages[0]}~${pages[pages.length - 1]}쪽`);
 
-  let scores = await aiGrade({ file, text, criteria, notes, signal });
-  let mode = 'ai';
-  if (!scores) {
-    if (hasText) { scores = heuristicGrade(text, criteria); mode = 'text'; }
-    else { scores = demoScanGrade(`${file.name}|${file.size}|${pages}`, criteria); mode = 'scan-demo'; }
+/**
+ * 파일 하나를 읽어 학생별로 나누고 채점한다.
+ * layout: 'auto' | 'duplex'(양면: 2쪽=1명) | 'simplex'(단면: 1쪽=1명)
+ */
+export async function gradeFile(file, { criteria, idDigits, notes, layout = 'auto' }, signal) {
+  const { pageCount, totalPages, texts, hasText, groups, detected } = await readPdf(file, { layout, idDigits }, signal);
+  const effLayout = detected ? detected.layout : layout;
+  const single = groups.length === 1;
+  const students = [];
+  for (let i = 0; i < groups.length; i++) {
+    const pages = groups[i];
+    const text = pages.map((p) => texts[p - 1]).join('\n').trim();
+    const studentId = extractStudentId(text, idDigits) || (single ? extractStudentId(file.name, idDigits) : '');
+    const name = single ? extractName(file.name, text) : extractName('', text);
+    const stText = text.replace(/\s/g, '').length >= MIN_TEXT_CHARS;
+
+    let scores = await aiGrade({ file, pages, text, criteria, notes, signal });
+    let mode = 'ai';
+    if (!scores) {
+      if (stText) { scores = heuristicGrade(text, criteria); mode = 'text'; }
+      else { scores = demoScanGrade(`${file.name}|${file.size}|${totalPages}|${pages.join(',')}`, criteria); mode = 'scan-demo'; }
+    }
+    const base = { idx: i + 1, pages, pageLabel: pageLabel(pages), studentId, name, mode, textPreview: text.slice(0, 3000) };
+    if (!scores) {
+      students.push({ ...base, status: 'fail', reason: '학생이 쓴 글씨를 해석할 수 없어요', scores: criteria.map((c) => ({ name: c.name, points: c.points, score: null, comment: '판독 불가' })), total: null });
+    } else {
+      students.push({ ...base, status: 'success', scores, total: roundHalf(scores.reduce((s, x) => s + x.score, 0)) });
+    }
   }
-  const base = { studentId, name, pages, mode, textPreview: text.slice(0, 3000) };
-  if (!scores) return { ...base, status: 'fail', reason: '학생이 쓴 글씨를 해석할 수 없어요', scores: criteria.map((c) => ({ name: c.name, points: c.points, score: null, comment: '판독 불가' })), total: null };
-  const total = roundHalf(scores.reduce((s, x) => s + x.score, 0));
-  return { ...base, status: 'success', scores, total };
+  return {
+    pages: totalPages, readPages: pageCount, hasText,
+    layout: effLayout, layoutAuto: !!detected, layoutReason: detected?.reason || '직접 지정',
+    students,
+  };
 }

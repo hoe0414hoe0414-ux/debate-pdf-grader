@@ -55,6 +55,16 @@
       </div>
 
       <div class="card">
+        <h2>양면 / 단면</h2>
+        <p class="muted">양면은 앞면에만 학번·이름이 있어서 앞+뒤 2쪽을 학생 1명으로 묶어 채점해요. 단면은 1쪽이 학생 1명이에요. 양면·단면 파일을 섞어서 한 번에 올려도 되고, 업로드 목록에서 파일마다 한 번 클릭으로 바꿀 수 있어요.</p>
+        <div class="options" role="radiogroup" aria-label="양면/단면 기본값">
+          <label class="option"><input type="radio" name="layoutDefault" value="auto"><span>자동 판단 <small>(추천)</small></span></label>
+          <label class="option"><input type="radio" name="layoutDefault" value="duplex"><span>모두 양면 <small>(2쪽 = 1명)</small></span></label>
+          <label class="option"><input type="radio" name="layoutDefault" value="simplex"><span>모두 단면 <small>(1쪽 = 1명)</small></span></label>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-head">
           <h2>채점 기준</h2>
           <span class="save-state" id="criteria-state"></span>
@@ -80,7 +90,7 @@
     <section class="view" id="view-files" data-view="files" hidden>
       <header class="page-head">
         <h1>업로드 파일</h1>
-        <p>학생 PDF를 한 번에 여러 개 올릴 수 있어요. 올리면 바로 채점하고, 목록은 이름순으로 정렬됩니다.</p>
+        <p>학생 PDF를 한 번에 여러 개 올릴 수 있어요. 양면·단면을 섞어 올려도 파일마다 알아서 판단하고, 틀리면 ‘양면/단면’ 버튼으로 바로 바꿀 수 있어요.</p>
       </header>
 
       <label class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="PDF 파일 선택 또는 끌어다 놓기">
