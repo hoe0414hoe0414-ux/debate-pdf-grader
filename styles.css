@@ -182,8 +182,11 @@ details.preview pre { white-space: pre-wrap; word-break: break-all; font: 13px/1
 /* 설정 화면: 촘촘한 2단 배치 */
 #view-settings { gap: 14px; }
 .page-head.compact { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; }
-.id-row { display: flex; align-items: center; gap: 8px; }
+.id-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .id-label { font-size: 13px; font-weight: 700; color: var(--muted); margin-right: 2px; }
+.io-sep { width: 1px; height: 22px; background: var(--border); margin: 0 6px; }
+.import-notice { background: var(--primary-soft); color: var(--text); border: 1px solid #C9D2FF; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.import-notice .grow { flex: 1; min-width: 240px; }
 .option.sm span { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
 .option.sm input:checked + span { padding: 5px 11px; }
 .section-card { padding: 18px 22px; gap: 10px; }

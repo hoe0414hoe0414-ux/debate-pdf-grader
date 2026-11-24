@@ -10,8 +10,8 @@
 <link rel="icon" href="assets/icon-192.png?v=2" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=2">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="styles.css?v=5">
-<script type="module" src="app.js?v=5"></script>
+<link rel="stylesheet" href="styles.css?v=6">
+<script type="module" src="app.js?v=6"></script>
 </head>
 <body>
 <div class="layout">
@@ -46,8 +46,13 @@
           <span class="id-label" title="학년 1자리 + 반 + 번호 2자리">학번 자릿수</span>
           <label class="option sm"><input type="radio" name="idDigits" value="4"><span>4자리 <small>(2301)</small></span></label>
           <label class="option sm"><input type="radio" name="idDigits" value="5"><span>5자리 <small>(20301)</small></span></label>
+          <span class="io-sep" aria-hidden="true"></span>
+          <button class="btn small" id="settings-export" type="button" title="모든 평가 영역과 설정을 파일로 저장">설정 내보내기</button>
+          <button class="btn small" id="settings-import" type="button" title="내보낸 설정 파일을 불러오기">설정 불러오기</button>
+          <input type="file" id="settings-file" accept=".json,application/json" hidden>
         </div>
       </header>
+      <div class="notice import-notice" id="import-notice" hidden></div>
 
       <div class="card section-card">
         <div class="card-head">

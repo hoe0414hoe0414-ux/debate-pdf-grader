@@ -1,5 +1,5 @@
-import { parseCriteria, criteriaSignature, EXAMPLE_CRITERIA } from './criteria.js?v=5';
-import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js?v=5';
+import { parseCriteria, criteriaSignature, EXAMPLE_CRITERIA } from './criteria.js?v=6';
+import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js?v=6';
 
 const LAYOUTS = { auto: '자동', duplex: '양면', simplex: '단면' };
 const $ = (s) => document.querySelector(s);
@@ -894,9 +894,128 @@ function initEvents() {
   });
 }
 
+// ── 설정 파일 내보내기 / 불러오기 ─────────────────────────────────────────────
+// ※ 설정 항목을 추가·변경하면 SETTINGS_FILE_VERSION을 올리고 toSettingsFile()/fromSettingsFile()을 함께 고칠 것.
+//   예전 버전 파일도 계속 불러올 수 있어야 함(없는 항목은 기본값).
+export const SETTINGS_FILE_FORMAT = 'debate-pdf-grader-settings';
+export const SETTINGS_FILE_VERSION = 1;
+function toSettingsFile() {
+  flushPendingInputs();
+  return {
+    format: SETTINGS_FILE_FORMAT,
+    version: SETTINGS_FILE_VERSION,
+    exportedAt: new Date().toISOString(),
+    idDigits: state.idDigits,
+    sections: state.sections.map((s) => {
+      const draft = store.get(draftKey(s.id));
+      const out = { name: s.name, criteriaText: s.criteriaText, layoutDefault: s.layoutDefault, notes: s.notes };
+      if (typeof draft === 'string' && draft !== s.criteriaText) out.criteriaDraft = draft; // 저장 안 한 작성 중 내용
+      return out;
+    }),
+  };
+}
+// 어떤 버전의 파일이든 현재 형식 {idDigits, sections:[{name, criteriaText, criteriaDraft, layoutDefault, notes}]}로 바꾼다
+function fromSettingsFile(obj) {
+  if (!obj || typeof obj !== 'object') throw new Error('설정 파일 형식이 아니에요.');
+  const str = (v) => (typeof v === 'string' ? v : '');
+  const sec = (x, i) => ({
+    name: (str(x?.name).trim() || `평가 ${i + 1}`).slice(0, 30),
+    criteriaText: str(x?.criteriaText),
+    criteriaDraft: typeof x?.criteriaDraft === 'string' ? x.criteriaDraft : null,
+    layoutDefault: ['auto', 'duplex', 'simplex'].includes(x?.layoutDefault) ? x.layoutDefault : 'auto',
+    notes: str(x?.notes),
+  });
+  let sections;
+  if (Array.isArray(obj.sections)) {
+    if (obj.format && obj.format !== SETTINGS_FILE_FORMAT) throw new Error('이 프로그램의 설정 파일이 아니에요.');
+    if (Number(obj.version) > SETTINGS_FILE_VERSION) throw new Error('더 새 버전 프로그램에서 만든 파일이에요. 페이지를 새로고침(Ctrl+Shift+R)한 뒤 다시 불러와 주세요.');
+    sections = obj.sections.slice(0, MAX_SECTIONS).map(sec);
+  } else if ('criteriaText' in obj || 'criteria' in obj) {
+    sections = [sec({ ...obj, name: '평가 1' }, 0)]; // 영역 탭이 생기기 전 형식
+  } else throw new Error('설정 파일에서 평가 영역을 찾지 못했어요.');
+  if (!sections.length) throw new Error('설정 파일에 평가 영역이 없어요.');
+  return { idDigits: Number(obj.idDigits) === 4 ? 4 : 5, sections };
+}
+function exportSettings() {
+  const data = JSON.stringify(toSettingsFile(), null, 2);
+  const a = document.createElement('a');
+  const d = new Date();
+  a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+  a.download = `토론채점기_설정_${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast(`설정을 파일로 내보냈어요. (평가 영역 ${state.sections.length}개)`);
+}
+let pendingImport = null;
+async function readSettingsFile(file) {
+  const box = $('#import-notice');
+  try {
+    if (file.size > 2 * 1024 * 1024) throw new Error('파일이 너무 커요. 내보낸 설정 파일(.json)을 골라 주세요.');
+    let obj;
+    try { obj = JSON.parse((await file.text()).replace(/^\uFEFF/, '')); } catch { throw new Error('설정 파일(.json)을 읽지 못했어요.'); }
+    pendingImport = fromSettingsFile(obj);
+    const names = pendingImport.sections.map((x) => `‘${esc(x.name)}’`).join(', ');
+    const lost = state.sections.filter((s) => !pendingImport.sections.some((x) => x.name === s.name.trim()) && filesOf(s.id).length);
+    box.innerHTML = `<span class="grow"><b>${esc(file.name)}</b> · 학번 ${pendingImport.idDigits}자리 · 평가 영역 ${pendingImport.sections.length}개 (${names})<br><span class="muted">지금 설정을 이 파일 내용으로 바꿔요. 이름이 같은 영역은 올린 파일이 그대로 남아요.${lost.length ? ` 파일에 없는 영역(${lost.map((s) => esc(secName(s))).join(', ')})과 그 영역에 올린 파일은 사라져요.` : ''}</span></span>
+      <button type="button" class="btn small primary" data-import="apply">불러오기</button><button type="button" class="btn small ghost" data-import="cancel">취소</button>`;
+    box.hidden = false;
+  } catch (e) {
+    pendingImport = null;
+    box.hidden = true;
+    toast(e.message || '설정 파일을 읽지 못했어요.');
+  }
+}
+function applyImport() {
+  const imp = pendingImport;
+  pendingImport = null;
+  $('#import-notice').hidden = true;
+  if (!imp) return;
+  clearTimeout(vTimer); clearTimeout(nTimer); clearTimeout(nameTimer);
+  const used = new Set();
+  const next = imp.sections.map((x) => {
+    const keep = state.sections.find((s) => s.name.trim() === x.name && !used.has(s.id)); // 같은 이름이면 올린 파일 유지
+    const id = keep ? keep.id : newSecId();
+    used.add(id);
+    const items = x.criteriaText.trim() ? parseCriteria(x.criteriaText).items.map(({ name, points, desc }) => ({ name, points, desc })) : [];
+    return { id, name: x.name, criteriaText: x.criteriaText, criteria: items, savedAt: items.length ? Date.now() : null, notes: x.notes, layoutDefault: x.layoutDefault, draft: x.criteriaDraft };
+  });
+  for (const s of state.sections) if (!used.has(s.id)) { for (const id of filesOf(s.id)) removeFile(id); store.del(draftKey(s.id)); draftAt.delete(s.id); }
+  for (const s of next) {
+    if (s.draft != null && s.draft !== s.criteriaText) store.set(draftKey(s.id), s.draft); else store.del(draftKey(s.id));
+    draftAt.delete(s.id);
+    delete s.draft;
+  }
+  state.idDigits = imp.idDigits;
+  state.sections = next;
+  state.activeSec = next[0].id;
+  if (state.result.sec && !used.has(state.result.sec)) state.result = { kind: 'all' };
+  document.querySelectorAll('input[name="idDigits"]').forEach((r) => { r.checked = Number(r.value) === state.idDigits; });
+  formSec = null;
+  sortFiles();
+  persist();
+  renderSettings();
+  markStale();
+  invalidate('files', 'results', 'badges');
+  pump();
+  toast(`설정을 불러왔어요. (평가 영역 ${next.length}개)`);
+}
+function initSettingsIO() {
+  const fileIn = $('#settings-file');
+  $('#settings-export').addEventListener('click', exportSettings);
+  $('#settings-import').addEventListener('click', () => fileIn.click());
+  fileIn.addEventListener('change', () => { const f = fileIn.files[0]; fileIn.value = ''; if (f) readSettingsFile(f); });
+  $('#import-notice').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-import]');
+    if (!b) return;
+    if (b.dataset.import === 'apply') applyImport();
+    else { pendingImport = null; $('#import-notice').hidden = true; }
+  });
+}
+
 // ── 시작 ────────────────────────────────────────────────────────────────
 persist(); // 예전 설정을 새 형식으로 옮겨 저장
 initSettings();
+initSettingsIO();
 initEvents();
 if (!location.hash && state.sections.some((s) => s.criteria.length)) history.replaceState(null, '', '#files');
 route();
