@@ -54,35 +54,51 @@
         </div>
       </div>
 
-      <div class="card">
-        <h2>양면 / 단면</h2>
-        <p class="muted">양면은 앞면에만 학번·이름이 있어서 앞+뒤 2쪽을 학생 1명으로 묶어 채점해요. 단면은 1쪽이 학생 1명이에요. 양면·단면 파일을 섞어서 한 번에 올려도 되고, 업로드 목록에서 파일마다 한 번 클릭으로 바꿀 수 있어요.</p>
-        <div class="options" role="radiogroup" aria-label="양면/단면 기본값">
-          <label class="option"><input type="radio" name="layoutDefault" value="auto"><span>자동 판단 <small>(추천)</small></span></label>
-          <label class="option"><input type="radio" name="layoutDefault" value="duplex"><span>모두 양면 <small>(2쪽 = 1명)</small></span></label>
-          <label class="option"><input type="radio" name="layoutDefault" value="simplex"><span>모두 단면 <small>(1쪽 = 1명)</small></span></label>
-        </div>
-      </div>
-
-      <div class="card">
+      <div class="card section-card">
         <div class="card-head">
-          <h2>채점 기준</h2>
+          <h2>평가 영역별 채점 기준</h2>
           <span class="save-state" id="criteria-state"></span>
         </div>
-        <p class="muted">AI에게 설명하듯 자유롭게 적어 주세요. 평가 이름, 토론 주제, 채점 항목과 배점, 주의할 점 등 무엇이든 괜찮아요. “1. 사회 문제 탐색 : 30점 만점”처럼 점수가 적힌 줄은 결과표의 항목으로 자동 인식돼요. 작성 중인 내용은 자동으로 임시 저장되고, ‘기준 저장’을 누르면 채점에 쓰여요.</p>
-        <textarea id="criteria" class="textarea" rows="16" spellcheck="false" placeholder="## 평가 : 찬반 토론 입론서 작성&#10;&#10;## 토론 주제&#10;…&#10;&#10;1. 사회 문제 탐색 : 30점 만점&#10;학생이 주장하는 바가 명확하고 주제에 맞는가"></textarea>
-        <div class="validation" id="criteria-validation" aria-live="polite"></div>
-        <div class="actions">
-          <button class="btn primary" id="criteria-save" type="button">기준 저장</button>
-          <button class="btn" id="criteria-revert" type="button">저장된 기준으로 되돌리기</button>
-          <button class="btn ghost" id="criteria-example" type="button">예시 불러오기</button>
-        </div>
-      </div>
+        <p class="muted">평가 영역(예: 입론서, 반론서, 1학기 토론)마다 탭을 만들어 서로 다른 채점 기준을 쓸 수 있어요. 탭 이름은 업로드 파일·채점 결과 화면에도 똑같이 생겨요.</p>
+        <div class="sec-tabs" id="sec-tabs" role="tablist" aria-label="평가 영역"></div>
 
-      <div class="card">
-        <h2>판독 참고 사항 <small class="muted">(선택)</small></h2>
-        <p class="muted">AI가 PDF에서 어떤 부분을 읽어야 하는지 적어 주세요. 예: “1쪽 표지는 제외하고 2쪽부터 읽기”, “입론서 칸만 채점”.</p>
-        <textarea id="reading-notes" class="textarea" rows="4" placeholder="예: 각 PDF의 첫 장은 표지이므로 제외하고, 주장·근거·반론 칸만 읽어 주세요."></textarea>
+        <div class="sec-body">
+          <div class="sec-name-row">
+            <label class="field">
+              <span>영역 이름</span>
+              <input id="sec-name" class="input" maxlength="30" placeholder="예: 입론서 (1학기)">
+            </label>
+            <button class="btn ghost danger-text" id="sec-delete" type="button">이 영역 삭제</button>
+          </div>
+
+          <div class="sub">
+            <h3>양면 / 단면</h3>
+            <p class="muted">양면은 앞면에만 학번·이름이 있어서 앞+뒤 2쪽을 학생 1명으로 묶어요. 단면은 1쪽이 학생 1명이에요. 섞어 올려도 파일마다 판단하고, 업로드 목록에서 한 번 클릭으로 바꿀 수 있어요.</p>
+            <div class="options" role="radiogroup" aria-label="양면/단면 기본값">
+              <label class="option"><input type="radio" name="layoutDefault" value="auto"><span>자동 판단 <small>(추천)</small></span></label>
+              <label class="option"><input type="radio" name="layoutDefault" value="duplex"><span>모두 양면 <small>(2쪽 = 1명)</small></span></label>
+              <label class="option"><input type="radio" name="layoutDefault" value="simplex"><span>모두 단면 <small>(1쪽 = 1명)</small></span></label>
+            </div>
+          </div>
+
+          <div class="sub">
+            <h3>채점 기준</h3>
+            <p class="muted">AI에게 설명하듯 자유롭게 적어 주세요. 평가 이름, 토론 주제, 채점 항목과 배점, 주의할 점 등 무엇이든 괜찮아요. “1. 사회 문제 탐색 : 30점 만점”처럼 점수가 적힌 줄은 결과표의 항목으로 자동 인식돼요. 작성 중인 내용은 자동으로 임시 저장되고, ‘기준 저장’을 누르면 채점에 쓰여요.</p>
+            <textarea id="criteria" class="textarea" rows="16" spellcheck="false" placeholder="## 평가 : 찬반 토론 입론서 작성&#10;&#10;## 토론 주제&#10;…&#10;&#10;1. 사회 문제 탐색 : 30점 만점&#10;학생이 주장하는 바가 명확하고 주제에 맞는가"></textarea>
+            <div class="validation" id="criteria-validation" aria-live="polite"></div>
+            <div class="actions">
+              <button class="btn primary" id="criteria-save" type="button">기준 저장</button>
+              <button class="btn" id="criteria-revert" type="button">저장된 기준으로 되돌리기</button>
+              <button class="btn ghost" id="criteria-example" type="button">예시 불러오기</button>
+            </div>
+          </div>
+
+          <div class="sub">
+            <h3>판독 참고 사항 <small class="muted">(선택)</small></h3>
+            <p class="muted">AI가 PDF에서 어떤 부분을 읽어야 하는지 적어 주세요. 예: “1쪽 표지는 제외하고 2쪽부터 읽기”, “입론서 칸만 채점”.</p>
+            <textarea id="reading-notes" class="textarea" rows="4" placeholder="예: 각 PDF의 첫 장은 표지이므로 제외하고, 주장·근거·반론 칸만 읽어 주세요."></textarea>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -90,13 +106,15 @@
     <section class="view" id="view-files" data-view="files" hidden>
       <header class="page-head">
         <h1>업로드 파일</h1>
-        <p>학생 PDF를 한 번에 여러 개 올릴 수 있어요. 양면·단면을 섞어 올려도 파일마다 알아서 판단하고, 틀리면 ‘양면/단면’ 버튼으로 바로 바꿀 수 있어요.</p>
+        <p>평가 영역 탭을 고른 뒤 PDF를 올리면 그 영역의 채점 기준으로 채점해요. 양면·단면을 섞어 올려도 파일마다 알아서 판단하고, 틀리면 ‘양면/단면’ 버튼으로 바로 바꿀 수 있어요.</p>
       </header>
+
+      <div class="sec-tabs" id="files-sec-tabs" role="tablist" aria-label="평가 영역"></div>
 
       <label class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="PDF 파일 선택 또는 끌어다 놓기">
         <input type="file" id="file-input" accept="application/pdf,.pdf" multiple hidden>
         <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 27V11M13 18l7-7 7 7"/><path d="M8 26v5h24v-5"/></svg>
-        <strong>PDF 파일을 여기로 끌어다 놓으세요</strong>
+        <strong id="dz-title">PDF 파일을 여기로 끌어다 놓으세요</strong>
         <span class="muted">또는 클릭해서 선택 · 여러 파일 가능 · 파일은 이 컴퓨터 밖으로 전송되지 않아요</span>
       </label>
 
@@ -116,7 +134,7 @@
     <section class="view" id="view-results" data-view="results" hidden>
       <header class="page-head">
         <h1>채점 결과</h1>
-        <p>‘전체 결과표’에서 모든 학생을 한 표로, 파일별 탭에서 학생 한 명의 상세 결과를 볼 수 있어요.</p>
+        <p>‘전체 결과표’는 모든 영역을 한눈에, 영역 이름을 누르면 그 영역 전체 또는 학급(파일)별 결과를 골라 볼 수 있어요.</p>
       </header>
       <div class="notice warn" id="results-notice" hidden></div>
       <div class="tabs-row">
@@ -124,6 +142,7 @@
         <button class="btn" id="export-csv" type="button" hidden>엑셀(CSV) 내려받기</button>
       </div>
       <div id="result-body"></div>
+      <div class="menu" id="tab-menu" role="menu" hidden></div>
     </section>
   </main>
 </div>
