@@ -271,3 +271,16 @@ details.preview pre { white-space: pre-wrap; word-break: break-all; font: 13px/1
   .card { padding: 20px; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* Claude 채점 카드 */
+.claude-card { padding: 16px 18px; gap: 10px; }
+.cc-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cc-head h3 { margin: 0; font-size: 15px; }
+.cc-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; flex-wrap: wrap; }
+.cc-folder { font-size: 13px; min-width: 0; }
+.cc-folder .ok, .cc-status .ok { color: var(--success); }
+.cc-folder .warn { color: var(--warn); }
+.cc-status { font-size: 12.5px; color: var(--muted); line-height: 1.7; }
+.cc-status .bad { color: var(--danger); }
+.claude-card .actions .btn { padding: 8px 14px; }
+.seg-off { font-size: 12px; padding: 4px 10px; color: var(--muted); }

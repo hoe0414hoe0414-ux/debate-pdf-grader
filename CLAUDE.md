@@ -19,3 +19,15 @@
 | 1 | `format`, `version`, `exportedAt`, `idDigits`(4/5), `sections[]` = `{name, criteriaText, criteriaDraft?, layoutDefault(auto/duplex/simplex), notes}`. 영역 탭 이전 형식(`{idDigits, criteriaText, notes}`)도 ‘평가 1’로 불러옴. |
 
 참고: 결과표 항목·채점 방식(배점식/감점식, 만점, 최저점, 백지 점수)은 `criteriaText`에서 매번 다시 해석하므로 설정 파일에 따로 저장하지 않는다. 결과표에서 직접 고친 점수는 채점 결과(브라우저 메모리)이며 설정 파일에 들어가지 않는다.
+
+## Claude 채점 요청/결과 양식 (반드시 함께 수정)
+
+API 키 없이 Claude(구독)가 채점한다. 앱이 요청(`request.json` + PDF)을 만들고 Claude가 `GRADING.md` 대로 `result.json`을 쓴다. 코드는 `bridge.js`(양식·zip·폴더)와 `app.js`의 `buildRequest()` / `importResult()`.
+요청·결과 항목을 바꾸면 `REQUEST_VERSION` / `RESULT_VERSION`을 올리고, `normalizeResult()`가 예전 결과 파일도 읽게 하며, `GRADING.md`, `examples/result.example.json`, 아래 표를 함께 고친다.
+
+| 양식 | 버전 | 내용 |
+|---|---|---|
+| 요청 | 1 | `format`, `version`, `requestId`, `createdAt`, `idDigits`, `idRule`, `sections[]`={id,name,criteriaText,notes,layoutDefault,rubric,items[],gradingPrompt}, `files[]`={fileId,name,path,section,sectionId,layout,pages,studentsHint} |
+| 결과 | 1 | `format`, `version`, `requestId`, `gradedAt`, `grader`, `files[]`={fileId,name,section,sectionId,pages,layout,students[]={pages,studentId,name,status(ok/unreadable/blank),scores[]={name,score,comment},total,comment}} |
+
+채점 폴더 구조: `<연결 폴더>/채점요청/<requestId>/{request.json, GRADING.md, pdf/…, status.json, result.json}`, 도우미 신호 `채점요청/helper.json`. 도우미: `helper/grading-helper.ps1`(+`start-helper.bat`, 폴더 연결 시 자동 복사)이 `claude -p`로 채점.

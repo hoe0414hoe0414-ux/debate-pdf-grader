@@ -1,4 +1,4 @@
-import { computeTotal, defaultRubric } from './criteria.js?v=7';
+import { computeTotal, defaultRubric } from './criteria.js?v=9';
 // PDF 판독 + 채점 엔진 (데모)
 // ─────────────────────────────────────────────────────────────────────────────
 // 지금은 데모 모드입니다.

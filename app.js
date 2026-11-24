@@ -1,5 +1,6 @@
-import { parseCriteria, criteriaSignature, computeTotal, defaultRubric, EXAMPLE_CRITERIA } from './criteria.js?v=7';
-import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js?v=7';
+import { parseCriteria, criteriaSignature, computeTotal, defaultRubric, EXAMPLE_CRITERIA } from './criteria.js?v=9';
+import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName, buildGradingPrompt } from './grader.js?v=9';
+import * as bridge from './bridge.js?v=9';
 
 const LAYOUTS = { auto: '자동', duplex: '양면', simplex: '단면' };
 const $ = (s) => document.querySelector(s);
@@ -96,7 +97,8 @@ const secSig = (s) => `${state.idDigits}\u0003${s.criteriaText}\u0003${criteriaS
 // 파일마다 고른 양면/단면 (null이면 그 영역의 기본값을 따름)
 const layoutChoice = (f) => f.layout || secById(f.sec)?.layoutDefault || 'auto';
 const fileSig = (f) => `${secSig(secById(f.sec))}\u0003${layoutChoice(f)}`;
-const isStale = (f) => !!f.sig && !!secById(f.sec) && f.sig !== fileSig(f);
+const isClaude = (f) => f.result?.source === 'claude';
+const isStale = (f) => !isClaude(f) && !!f.sig && !!secById(f.sec) && f.sig !== fileSig(f);
 
 // ── 렌더링 예약 (한 프레임에 한 번만 다시 그림) ──────────────────────────────
 const dirty = new Set();
@@ -110,7 +112,7 @@ function flush() {
   const d = new Set(dirty); dirty.clear();
   if (d.has('badges')) renderBadges();
   // 숨겨진 화면은 그리지 않고, 화면을 열 때(route) 그린다
-  if (d.has('files') && state.view === 'files') renderFiles();
+  if (d.has('files') && state.view === 'files') { renderFiles(); renderClaude(); }
   if (d.has('results') && state.view === 'results') renderResults();
   if (d.has('sectabs') && state.view === 'settings') renderSecTabs();
 }
@@ -433,6 +435,7 @@ function pump() {
   while (running < CONCURRENCY && i < queue.length) {
     const f = state.files.get(queue[i]);
     if (!f || f.status === 'grading') { queue.splice(i, 1); continue; }
+    if (!f.file || isClaude(f)) { queue.splice(i, 1); continue; } // Claude 결과·불러온 결과는 데모 채점으로 덮지 않음
     if (!canGradeFile(f)) { i++; continue; }
     queue.splice(i, 1);
     run(f);
@@ -470,6 +473,8 @@ async function run(f) {
   }
 }
 function regradeOne(f) {
+  if (!f.file) { toast('결과 파일에서 불러온 학급이라 다시 채점할 PDF가 없어요.'); return; }
+  if (isClaude(f)) f.result = null;
   if (f.abort) f.abort.abort();
   f.abort = null;
   f.status = 'pending'; f.result = null; f.error = '';
@@ -491,7 +496,8 @@ function regradeAll(secId = null) {
   for (const id of state.order) {
     const f = state.files.get(id);
     if (secId && f.sec !== secId) continue;
-    if (f.status === 'grading') { f.abort?.abort(); f.abort = null; running = Math.max(0, running); }
+    if (!f.file || isClaude(f)) continue; // Claude 채점 결과는 그대로 둔다 (다시 받으려면 ‘채점 시작’)
+    if (f.status === 'grading') { f.abort?.abort(); f.abort = null; }
     f.status = 'pending'; f.result = null; f.error = '';
     if (!queue.includes(id)) queue.push(id);
     any = true;
@@ -510,11 +516,11 @@ function statusText(f) {
     case 'success': {
       const st = f.result.students;
       const bad = st.filter((x) => x.status !== 'success').length;
-      return `채점 완료 · 학생 ${st.length}명${bad ? ` (채점 불가 ${bad}명)` : ''} · 결과 보기`;
+      return `${isClaude(f) ? 'Claude 채점 완료' : '데모 채점'} · 학생 ${st.length}명${bad ? ` (채점 불가 ${bad}명)` : ''} · 결과 보기`;
     }
-    case 'fail': return `채점 실패 · ${f.error || '판독 불가'}`;
-    case 'grading': return '채점 중…';
-    default: return canGradeFile(f) ? '대기 중' : '기준 저장 후 채점';
+    case 'fail': return `${isClaude(f) ? 'Claude: ' : ''}채점 실패 · ${f.error || '판독 불가'}`;
+    case 'grading': return '데모 채점 중…';
+    default: return !f.file ? '결과만 있음' : canGradeFile(f) ? '대기 중' : '기준 저장 후 채점';
   }
 }
 function counts(secId = null) {
@@ -538,7 +544,7 @@ function layoutSeg(f) {
   };
   return `<span class="seg" role="group" aria-label="양면/단면" data-seg="${f.id}">${btn('auto')}${btn('duplex')}${btn('simplex')}</span>`;
 }
-function rowKey(f) { return `${f.status}|${statusText(f)}|${layoutChoice(f)}|${f.result?.layout || ''}`; }
+function rowKey(f) { return `${f.status}|${f.result?.source || ''}|${statusText(f)}|${layoutChoice(f)}|${f.result?.layout || ''}`; }
 
 function renderFiles() {
   const sec = activeSection();
@@ -564,10 +570,10 @@ function renderFiles() {
   const ul = $('#file-list');
   const rowHtml = (f) => {
     const link = f.status === 'success' || f.status === 'fail';
-    const pages = f.result?.pages ? `${f.result.pages}쪽` : fmtSize(f.size);
+    const pages = f.result?.pages ? `${f.result.pages}쪽` : f.file ? fmtSize(f.size) : '–';
     return `<span class="dot"></span>
       <span class="name" title="${esc(f.name)}">${esc(f.name)}</span>
-      ${layoutSeg(f)}
+      ${f.file ? layoutSeg(f) : '<span class="seg seg-off" title="결과 파일에서 불러옴">불러온 결과</span>'}
       <span class="size">${pages}</span>
       ${link ? `<button type="button" class="status" data-link="${f.id}">${esc(statusText(f))}</button>` : `<span class="status">${esc(statusText(f))}</span>`}
       <button type="button" class="remove" data-remove="${f.id}" aria-label="${esc(f.name)} 업로드 취소" title="업로드 취소">${X_ICON}</button>`;
@@ -697,7 +703,7 @@ function scoreCells(f, st, sec) {
   }).join('');
   const t = totalEff(f, st, sec);
   const origT = st.status === 'success' ? fmt(st.total) : BAD;
-  const tag = st.mode === 'scan-demo' && !hasEdit(editOf(f, st)) ? '<span class="demo-tag">데모</span>' : '';
+  const tag = (st.mode === 'scan-demo' && !hasEdit(editOf(f, st)) ? '<span class="demo-tag">데모</span>' : '') + (st.blank ? '<span class="demo-tag">백지</span>' : '');
   return cells + (t == null ? edCell(f, st, 'total', BAD, 'num total bad', origT) : edCell(f, st, 'total', `${fmt(t)}${tag}`, 'num total', origT));
 }
 const idCells = (f, st) => edCell(f, st, 'id', esc(idOf(f, st) || '–'), '', st.studentId || '없음') + edCell(f, st, 'name', esc(nameOf(f, st) || '–'), '', st.name || '없음');
@@ -1136,11 +1142,268 @@ function initSettingsIO() {
   });
 }
 
+// ── Claude 채점 (API 키 없이: 요청 파일 → Claude가 채점 → 결과 파일) ─────────────────
+const BRIDGE_KEY = 'dpg.bridge.v1';
+const cc = {
+  dir: null, perm: 'none', helperAt: 0, busy: false, timer: 0,
+  pending: (store.get(BRIDGE_KEY)?.pending || []).filter((x) => x && x.id).slice(-20), // [{id, at, files}]
+  imported: store.get(BRIDGE_KEY)?.imported || {},  // requestId/name -> lastModified
+  progress: {},   // requestId -> status.json 내용
+  requests: new Map(), // 이번 창에서 보낸 요청: requestId -> Map(fileId)
+};
+const saveBridge = () => store.set(BRIDGE_KEY, { pending: cc.pending, imported: cc.imported });
+
+async function buildRequest(requestId) {
+  const files = state.order.map((id) => state.files.get(id)).filter((f) => f.file && secById(f.sec)?.criteria.length);
+  const secs = state.sections.filter((s) => files.some((f) => f.sec === s.id));
+  const manifest = {
+    format: bridge.REQUEST_FORMAT, version: bridge.REQUEST_VERSION, requestId, createdAt: new Date().toISOString(),
+    instructions: 'GRADING.md 의 절차대로 채점하고, 같은 폴더에 result.json 을 쓰세요.',
+    idDigits: state.idDigits,
+    idRule: `학번은 ${state.idDigits}자리 = 학년 1자리 + 반 ${state.idDigits - 3}자리 + 번호 2자리 (예: ${state.idDigits === 5 ? '20301 = 2학년 03반 01번' : '2301 = 2학년 3반 01번'})`,
+    sections: secs.map((s) => {
+      const rb = rubricOf(s);
+      return {
+        id: s.id, name: secName(s), criteriaText: s.criteriaText, notes: s.notes, layoutDefault: s.layoutDefault,
+        rubric: rb,
+        items: s.criteria.map((c) => ({ name: c.name, points: rb.mode === 'deduct' ? null : c.points, deductions: (c.deductions || []).map((d) => ({ text: d.text, points: -d.pts })) })),
+        gradingPrompt: buildGradingPrompt({ prompt: s.criteriaText, criteria: s.criteria, rubric: rb, notes: s.notes, idDigits: state.idDigits }),
+      };
+    }),
+    files: [],
+  };
+  const entries = [];
+  const used = new Set();
+  for (const f of files) {
+    const sec = secById(f.sec);
+    let path = `pdf/${bridge.safeName(secName(sec))}/${bridge.safeName(f.name)}`;
+    for (let k = 2; used.has(path); k++) path = `pdf/${bridge.safeName(secName(sec))}/${k}_${bridge.safeName(f.name)}`;
+    used.add(path);
+    const r = f.result && !isClaude(f) ? f.result : null;
+    manifest.files.push({
+      fileId: f.id, name: f.name, path, section: secName(sec), sectionId: sec.id,
+      layout: r?.layout || (layoutChoice(f) === 'auto' ? null : layoutChoice(f)), layoutChosenByTeacher: layoutChoice(f) !== 'auto',
+      pages: r?.pages || null,
+      // 프로그램이 미리 나눈 학생별 쪽 (참고용, 틀리면 Claude가 바로잡아도 됨)
+      studentsHint: r ? r.students.map((st) => ({ pages: st.pages, studentId: st.studentId || '', name: st.name || '' })) : null,
+    });
+    entries.push({ name: path, file: f.file });
+  }
+  return { manifest, entries, count: files.length };
+}
+
+async function guideText() {
+  try { const r = await fetch('./GRADING.md', { cache: 'no-cache' }); if (r.ok) return await r.text(); } catch { /* 오프라인 */ }
+  return '# 채점 지침\n저장소의 GRADING.md 를 참고하세요.';
+}
+
+async function startClaudeGrading() {
+  if (cc.busy) return;
+  const requestId = bridge.newRequestId();
+  const { manifest, entries, count } = await buildRequest(requestId);
+  if (!count) { toast(state.files.size ? '채점 기준을 저장한 영역의 PDF가 없어요.' : '먼저 PDF를 올려 주세요.'); return; }
+  cc.busy = true; renderClaude();
+  try {
+    const guide = await guideText();
+    const json = JSON.stringify(manifest, null, 2);
+    cc.requests.set(requestId, new Map(manifest.files.map((x) => [x.fileId, x])));
+    if (cc.dir && cc.perm === 'granted') {
+      const base = `${bridge.REQUESTS_DIR}/${requestId}`;
+      for (const e of entries) await bridge.writeFile(cc.dir, `${base}/${e.name}`, e.file);
+      await bridge.writeFile(cc.dir, `${base}/GRADING.md`, guide);
+      await bridge.writeFile(cc.dir, `${base}/request.json`, json); // 마지막에 써야 도우미가 반쯤 쓴 요청을 집지 않음
+      cc.pending.push({ id: requestId, at: Date.now(), files: count });
+      saveBridge();
+      toast(`채점 요청을 보냈어요. (PDF ${count}개)`);
+      pollFolder();
+    } else {
+      const zipEntries = [{ name: 'request.json', data: json }, { name: 'GRADING.md', data: guide }];
+      for (const e of entries) zipEntries.push({ name: e.name, data: new Uint8Array(await e.file.arrayBuffer()) });
+      const blob = bridge.makeZip(zipEntries);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `채점요청_${requestId}.zip`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      cc.pending.push({ id: requestId, at: Date.now(), files: count, zip: true });
+      saveBridge();
+      toast('채점 요청 파일(zip)을 내려받았어요. Claude에게 전달한 뒤 결과 파일을 불러와 주세요.');
+    }
+  } catch (e) {
+    console.error(e);
+    toast(`요청을 만들지 못했어요: ${e.message || e}`);
+  } finally { cc.busy = false; renderClaude(); }
+}
+
+// 결과 파일 → 결과표
+const norm = (x) => String(x || '').replace(/\s+/g, '').toLowerCase();
+function importResult(obj, sourceName = '') {
+  const res = bridge.normalizeResult(obj);
+  const reqMap = cc.requests.get(res.requestId);
+  let filesDone = 0, students = 0, unknownSec = 0;
+  for (const rf of res.files) {
+    // 영역 찾기: 이번 요청의 영역 id → 영역 이름 → 지금 보고 있는 영역
+    let sec = (rf.sectionId && secById(rf.sectionId)) || state.sections.find((s) => norm(secName(s)) === norm(rf.section));
+    const fromReq = reqMap?.get(rf.fileId);
+    if (!sec && fromReq) sec = secById(fromReq.sectionId);
+    if (!sec) { sec = activeSection(); unknownSec++; }
+    // 파일 찾기: 같은 요청의 fileId → 같은 영역의 같은 파일 이름 → 새로 만들기(결과만 있는 학급)
+    let f = fromReq && state.files.get(rf.fileId);
+    if (!f) f = [...state.files.values()].find((x) => x.sec === sec.id && norm(x.name) === norm(rf.name));
+    if (!f) {
+      const id = `f${++seq}`;
+      f = { id, sec: sec.id, file: null, name: rf.name || `학급 ${id}`, size: 0, status: 'pending', result: null, error: '', sig: null, layout: null };
+      state.files.set(id, f);
+    }
+    if (f.abort) { f.abort.abort(); f.abort = null; }
+    const qi = queue.indexOf(f.id); if (qi >= 0) queue.splice(qi, 1);
+    const crit = sec.criteria;
+    const rb = rubricOf(sec);
+    const sts = rf.students.map((s, i) => {
+      const pick = (c, k) => s.scores.find((x) => x.name === c.name) || s.scores.find((x) => norm(x.name) === norm(c.name)) || (s.scores.length === crit.length ? s.scores[k] : null);
+      const scores = crit.map((c, k) => { const x = pick(c, k); return { name: c.name, points: c.points, score: x?.score ?? null, comment: x?.comment || '' }; });
+      const pages = s.pages;
+      const base = { idx: i + 1, blank: s.status === 'blank', pages, pageLabel: pages.length ? (pages.length === 1 ? `${pages[0]}쪽` : `${pages[0]}~${pages[pages.length - 1]}쪽`) : '', studentId: s.studentId, name: s.name, mode: 'claude', textPreview: s.comment };
+      if (s.status === 'unreadable') return { ...base, status: 'fail', reason: s.comment || '글씨를 판독할 수 없어요 (Claude)', scores, total: null };
+      let total;
+      if (s.status === 'blank') total = rb.blank ?? rb.floor ?? s.total ?? 0; // 백지: 기준의 백지 점수 → 최저점 → Claude가 적은 총점
+      else total = scores.every((x) => x.score != null) ? computeTotal(rb, scores.map((x) => x.score)) : s.total;
+      return { ...base, status: total == null ? 'fail' : 'success', reason: total == null ? '점수가 비어 있어요' : '', scores, total };
+    });
+    const ok = sts.filter((x) => x.status === 'success').length;
+    f.result = { pages: rf.pages || f.result?.pages || null, layout: rf.layout || f.result?.layout || null, layoutAuto: false, layoutReason: 'Claude가 판단', students: sts, source: 'claude', gradedAt: res.gradedAt, requestId: res.requestId };
+    f.status = ok ? 'success' : 'fail';
+    f.error = ok ? '' : (sts[0]?.reason || '채점 결과가 없어요');
+    f.sig = fileSig(f);
+    f.edits = null;
+    filesDone++; students += sts.length;
+  }
+  sortFiles();
+  invalidate('files', 'results', 'badges', 'sectabs');
+  cc.pending = cc.pending.filter((p) => p.id !== res.requestId);
+  saveBridge();
+  toast(`Claude 채점 결과를 불러왔어요. (학급 ${filesDone}개 · 학생 ${students}명)${unknownSec ? ` · 영역을 못 찾은 ${unknownSec}개는 ‘${secName(activeSection())}’에 넣었어요` : ''}`);
+  return res;
+}
+async function importResultFiles(list) {
+  for (const file of list) {
+    try { importResult(JSON.parse((await file.text()).replace(/^﻿/, '')), file.name); }
+    catch (e) { toast(`${file.name}: ${e.message || '결과 파일을 읽지 못했어요.'}`); }
+  }
+  renderClaude();
+}
+
+// 연결한 폴더에 채점 도우미(더블클릭 한 번으로 켜는 파일)를 넣어 둔다
+async function installHelper() {
+  try {
+    const get = async (u) => { const r = await fetch(u, { cache: 'no-cache' }); if (!r.ok) throw new Error(u); return new Uint8Array(await r.arrayBuffer()); };
+    await bridge.writeFile(cc.dir, 'helper/grading-helper.ps1', await get('./helper/grading-helper.ps1'));
+    await bridge.writeFile(cc.dir, '채점 도우미 켜기.bat', await get('./helper/start-helper.bat'));
+  } catch (e) { console.warn('도우미 파일을 넣지 못함', e); }
+}
+// 채점 폴더 연결 (Chrome/Edge)
+async function connectFolder() {
+  if (!bridge.folderSupported()) { toast('이 브라우저는 폴더 연결을 지원하지 않아요. 크롬이나 엣지에서 열어 주세요.'); return; }
+  try {
+    if (cc.dir && cc.perm !== 'granted') {
+      cc.perm = await bridge.dirPermission(cc.dir, true);
+      if (cc.perm === 'granted') { renderClaude(); pollFolder(); return; }
+    }
+    const h = await window.showDirectoryPicker({ id: 'dpg-grading', mode: 'readwrite' });
+    cc.dir = h; cc.perm = await bridge.dirPermission(h, true);
+    await bridge.saveDirHandle(h);
+    if (cc.perm === 'granted') await installHelper();
+    toast(`‘${h.name}’ 폴더에 연결했어요.`);
+  } catch (e) { if (e?.name !== 'AbortError') toast('폴더를 연결하지 못했어요.'); }
+  renderClaude(); pollFolder();
+}
+async function pollFolder() {
+  clearTimeout(cc.timer);
+  if (!cc.dir || cc.perm !== 'granted') return;
+  try {
+    // 도우미가 살아 있는지 (도우미가 몇 초마다 helper.json 을 고침)
+    try {
+      const d = await cc.dir.getDirectoryHandle(bridge.REQUESTS_DIR);
+      const hf = await (await d.getFileHandle('helper.json')).getFile();
+      cc.helperAt = hf.lastModified;
+      try { cc.helperErr = JSON.parse((await hf.text()).replace(/^\uFEFF/, '')).error || ''; } catch { cc.helperErr = ''; }
+    } catch { cc.helperAt = 0; cc.helperErr = ''; }
+    for (const p of cc.pending) {
+      try {
+        const d = await (await cc.dir.getDirectoryHandle(bridge.REQUESTS_DIR)).getDirectoryHandle(p.id);
+        try { cc.progress[p.id] = JSON.parse(await (await (await d.getFileHandle('status.json')).getFile()).text()); } catch { /* 아직 없음 */ }
+      } catch { /* 폴더 없음 */ }
+    }
+    for (const r of await bridge.findResults(cc.dir)) {
+      const key = `${r.requestId}/${r.name}`;
+      if (cc.imported[key] >= r.file.lastModified) continue;
+      if (!cc.pending.some((p) => p.id === r.requestId) && cc.imported[key] == null && Object.keys(cc.imported).length && Date.now() - r.file.lastModified > 7 * 864e5) continue; // 오래된 남의 결과는 건너뜀
+      cc.imported[key] = r.file.lastModified;
+      saveBridge();
+      try { importResult(JSON.parse((await r.file.text()).replace(/^﻿/, '')), r.name); }
+      catch (e) { toast(`결과 파일 오류(${r.requestId}): ${e.message}`); }
+    }
+  } catch (e) { console.warn(e); }
+  renderClaude();
+  if (!document.hidden) cc.timer = setTimeout(pollFolder, cc.pending.length ? 3000 : 10000);
+}
+
+const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? '방금' : m < 60 ? `${m}분 전` : `${Math.round(m / 60)}시간 전`; };
+function renderClaude() {
+  const box = $('#claude-card');
+  if (!box) return;
+  const sup = bridge.folderSupported();
+  const connected = cc.dir && cc.perm === 'granted';
+  $('#cc-folder').innerHTML = connected
+    ? `<span class="ok">● 채점 폴더: <b>${esc(cc.dir.name)}</b></span>`
+    : cc.dir ? `<span class="warn">● ‘${esc(cc.dir.name)}’ 폴더 다시 허용이 필요해요</span>`
+      : sup ? '<span class="muted">채점 폴더가 연결되지 않았어요 (연결하면 요청·결과가 자동으로 오가요)</span>'
+        : '<span class="muted">이 브라우저는 폴더 연결이 안 돼요. 요청 파일(zip)을 내려받는 방식으로 진행해요.</span>';
+  const cb = $('#cc-connect');
+  cb.hidden = !sup;
+  cb.textContent = connected ? '폴더 바꾸기' : cc.dir ? '폴더 다시 허용' : '채점 폴더 연결';
+  const n = [...state.files.values()].filter((f) => f.file && secById(f.sec)?.criteria.length).length;
+  const sb = $('#cc-send');
+  sb.disabled = cc.busy || !n;
+  sb.textContent = cc.busy ? '요청 만드는 중…' : connected ? `Claude 채점 시작 (PDF ${n}개)` : `채점 요청 파일 받기 (PDF ${n}개)`;
+  const helperOn = connected && cc.helperAt && Date.now() - cc.helperAt < 30000;
+  const lines = [];
+  if (connected) {
+    if (helperOn && cc.helperErr) lines.push(`<span class="bad">● 채점 도우미: ${esc(cc.helperErr)}</span>`);
+    else lines.push(helperOn ? '<span class="ok">● 채점 도우미 켜짐 — ‘Claude 채점 시작’을 누르면 자동으로 채점해요</span>' : `<span class="muted">○ 채점 도우미가 꺼져 있어요. 연결한 폴더의 ‘채점 도우미 켜기.bat’을 더블클릭하거나, 프로젝트 채팅에서 Claude에게 “채점해줘”라고 말해 주세요.</span>`);
+  }
+  for (const p of cc.pending.slice(-3).reverse()) {
+    const pr = cc.progress[p.id];
+    const st = pr?.state === 'grading' ? `채점 중${pr.done != null && pr.total ? ` (${pr.done}/${pr.total})` : ''}${pr.message ? ` · ${esc(pr.message)}` : ''}` : pr?.state === 'error' ? `<span class="bad">오류: ${esc(pr.message || '')}</span>` : p.zip ? 'zip으로 받음 · 결과 파일을 기다리는 중' : '결과 기다리는 중';
+    lines.push(`<span>요청 ${esc(p.id)} · PDF ${p.files}개 · ${ago(p.at)} · ${st}</span>`);
+  }
+  $('#cc-status').innerHTML = lines.join('<br>');
+}
+
+function initClaude() {
+  $('#cc-connect').addEventListener('click', connectFolder);
+  $('#cc-send').addEventListener('click', startClaudeGrading);
+  const rf = $('#result-file');
+  const pickResults = () => rf.click();
+  $('#cc-import').addEventListener('click', pickResults);
+  $('#import-result').addEventListener('click', pickResults);
+  rf.addEventListener('change', () => { const l = [...rf.files]; rf.value = ''; if (l.length) importResultFiles(l); });
+  $('#cc-pending-clear')?.addEventListener('click', () => { cc.pending = []; saveBridge(); renderClaude(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) pollFolder(); });
+  bridge.loadDirHandle().then(async (h) => {
+    if (!h) return renderClaude();
+    cc.dir = h; cc.perm = await bridge.dirPermission(h, false);
+    renderClaude(); pollFolder();
+  });
+  renderClaude();
+}
+
 // ── 시작 ────────────────────────────────────────────────────────────────
 persist(); // 예전 설정을 새 형식으로 옮겨 저장
 initSettings();
 initSettingsIO();
 initEvents();
+initClaude();
 if (!location.hash && state.sections.some((s) => s.criteria.length)) history.replaceState(null, '', '#files');
 route();
 renderBadges();

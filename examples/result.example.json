@@ -1,0 +1,32 @@
+{
+  "format": "debate-pdf-grader-result",
+  "version": 1,
+  "requestId": "20261124-120000",
+  "gradedAt": "2026-11-24T12:10:00+09:00",
+  "grader": "Claude",
+  "files": [
+    {
+      "fileId": "f1",
+      "name": "2학년 3반.pdf",
+      "section": "입론서",
+      "pages": 4,
+      "layout": "duplex",
+      "students": [
+        {
+          "pages": [1, 2], "studentId": "20302", "name": "이논리", "status": "ok",
+          "scores": [
+            { "name": "주장", "score": 0, "comment": "감점 없음" },
+            { "name": "근거", "score": -4, "comment": "주장1 근거가 주장을 뒷받침하지 못함" },
+            { "name": "주장에 대한 이유", "score": 0, "comment": "" },
+            { "name": "출처", "score": -4, "comment": "주장2 출처 없음" }
+          ],
+          "total": 92
+        },
+        {
+          "pages": [3, 4], "studentId": "20301", "name": "김토론", "status": "unreadable",
+          "scores": [], "comment": "글씨를 알아볼 수 없음"
+        }
+      ]
+    }
+  ]
+}
