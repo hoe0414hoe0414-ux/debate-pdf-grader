@@ -1,5 +1,5 @@
-import { parseCriteria, criteriaSignature, EXAMPLE_CRITERIA } from './criteria.js?v=6';
-import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js?v=6';
+import { parseCriteria, criteriaSignature, computeTotal, defaultRubric, EXAMPLE_CRITERIA } from './criteria.js?v=7';
+import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName } from './grader.js?v=7';
 
 const LAYOUTS = { auto: '자동', duplex: '양면', simplex: '단면' };
 const $ = (s) => document.querySelector(s);
@@ -29,25 +29,37 @@ function makeSection(name, from = {}) {
     id: typeof from.id === 'string' && /^[\w-]{1,40}$/.test(from.id) ? from.id : newSecId(),
     name: String(name || '평가 1').slice(0, 30),
     criteriaText: typeof from.criteriaText === 'string' ? from.criteriaText : '',
-    criteria: Array.isArray(from.criteria) ? from.criteria.filter((c) => c && typeof c.name === 'string' && Number(c.points) > 0).map((c) => ({ name: c.name, points: Number(c.points), desc: String(c.desc || '') })) : [],
+    criteria: [],
+    rubric: null,
     savedAt: from.savedAt || null,
     notes: typeof from.notes === 'string' ? from.notes : '',
     layoutDefault: ['auto', 'duplex', 'simplex'].includes(from.layoutDefault) ? from.layoutDefault : 'auto',
   };
 }
+// 채점 기준 글에서 결과표 항목과 채점 방식(배점식/감점식, 만점, 최저점, 백지 점수)을 만든다
+function compileCriteria(text) {
+  const r = parseCriteria(text);
+  return { criteria: r.items.map(({ name, points, desc, deductions }) => ({ name, points, desc, deductions })), rubric: r.rubric };
+}
+// 저장된 기준이 있으면 글에서 다시 해석한다 (해석 방식이 좋아지면 예전에 저장한 기준에도 바로 반영)
+function hydrate(sec, wasSaved) {
+  if (wasSaved && sec.criteriaText.trim()) Object.assign(sec, compileCriteria(sec.criteriaText));
+  return sec;
+}
+const rubricOf = (sec) => sec.rubric || defaultRubric(sec.criteria);
 
 function loadSettings() {
   const v2 = store.get(KEY);
   if (v2 && Array.isArray(v2.sections) && v2.sections.length) {
     const seen = new Set();
-    const sections = v2.sections.slice(0, MAX_SECTIONS).map((s, i) => makeSection((s && s.name) || `평가 ${i + 1}`, s || {}))
+    const sections = v2.sections.slice(0, MAX_SECTIONS).map((s, i) => hydrate(makeSection((s && s.name) || `평가 ${i + 1}`, s || {}), !!(s && (s.savedAt || s.criteria?.length))))
       .map((s) => { if (seen.has(s.id)) s.id = newSecId(); seen.add(s.id); return s; });
     return { idDigits: v2.idDigits === 4 ? 4 : 5, sections, activeSec: v2.activeSec };
   }
   // 예전 버전(영역 하나) 설정을 첫 번째 영역으로 옮긴다
   const v1 = store.get(OLD_KEY) || {};
   const sec = makeSection('평가 1', { ...v1, id: undefined });
-  if (!sec.criteria.length && sec.criteriaText) sec.criteria = parseCriteria(sec.criteriaText).items.map(({ name, points, desc }) => ({ name, points, desc }));
+  hydrate(sec, !!sec.criteriaText.trim());
   const oldDraft = store.get(OLD_DRAFT_KEY);
   if (typeof oldDraft === 'string') { store.set(draftKey(sec.id), oldDraft); store.del(OLD_DRAFT_KEY); }
   return { idDigits: v1.idDigits === 4 ? 4 : 5, sections: [sec], activeSec: sec.id };
@@ -77,10 +89,10 @@ function persist() {
   return store.set(KEY, {
     idDigits: state.idDigits,
     activeSec: state.activeSec,
-    sections: state.sections.map(({ id, name, criteriaText, criteria, savedAt, notes, layoutDefault }) => ({ id, name, criteriaText, criteria, savedAt, notes, layoutDefault })),
+    sections: state.sections.map(({ id, name, criteriaText, criteria, savedAt, notes, layoutDefault }) => ({ id, name, criteriaText, criteria: criteria.map(({ name: n, points }) => ({ name: n, points })), savedAt, notes, layoutDefault })),
   });
 }
-const secSig = (s) => `${state.idDigits}\u0003${s.criteriaText}\u0003${criteriaSignature(s.criteria)}\u0003${s.notes}`;
+const secSig = (s) => `${state.idDigits}\u0003${s.criteriaText}\u0003${criteriaSignature(s.criteria)}\u0003${JSON.stringify(s.rubric)}\u0003${s.notes}`;
 // 파일마다 고른 양면/단면 (null이면 그 영역의 기본값을 따름)
 const layoutChoice = (f) => f.layout || secById(f.sec)?.layoutDefault || 'auto';
 const fileSig = (f) => `${secSig(secById(f.sec))}\u0003${layoutChoice(f)}`;
@@ -320,8 +332,15 @@ function renderCriteriaState() {
   const box = $('#criteria-validation');
   const lines = [];
   if (r.ok) {
-    const chips = r.items.map((it) => `<span class="chip">${esc(it.name)} <b>${fmtNum(it.points)}점</b></span>`).join('');
-    lines.push(`<div class="ok">✓ 결과표에 쓸 채점 항목 ${r.items.length}개 · 총 ${fmtNum(r.total)}점${r.assumed ? ' (자동 지정)' : ''}</div><div class="chips">${chips}</div>`);
+    const rb = r.rubric;
+    const extra = [rb.floor != null ? `최저 ${fmtNum(rb.floor)}점` : '', rb.blank != null ? `백지 ${fmtNum(rb.blank)}점` : ''].filter(Boolean).join(' · ');
+    if (rb.mode === 'deduct') {
+      const chips = r.items.map((it) => `<span class="chip" title="${esc(it.deductions.map((d) => d.text).join('\n'))}">${esc(it.name)} <b>감점 규칙 ${it.deductions.length}개</b></span>`).join('');
+      lines.push(`<div class="ok">✓ 감점식 · 만점 ${fmtNum(rb.max)}점${r.assumed ? '(자동)' : ''}에서 감점 · 결과표 항목 ${r.items.length}개${extra ? ` · ${extra}` : ''}</div><div class="chips">${chips}</div>`);
+    } else {
+      const chips = r.items.map((it) => `<span class="chip">${esc(it.name)} <b>${fmtNum(it.points)}점</b></span>`).join('');
+      lines.push(`<div class="ok">✓ 결과표에 쓸 채점 항목 ${r.items.length}개 · 총 ${fmtNum(r.total)}점${r.assumed ? ' (자동 지정)' : ''}${extra ? ` · ${extra}` : ''}</div><div class="chips">${chips}</div>`);
+    }
   }
   r.errors.forEach((e) => lines.push(`<div class="err">✕ ${esc(e.msg)}</div>`));
   r.warnings.slice(0, 3).forEach((w) => lines.push(`<div class="warn">! ${esc(w)}</div>`));
@@ -345,7 +364,7 @@ function saveCriteria() {
   if (!r.ok) { renderCriteriaState(); toast('채점 기준이 비어 있어요.'); return; }
   const wasNew = !sec.criteria.length;
   sec.criteriaText = ta.value;
-  sec.criteria = r.items.map(({ name, points, desc }) => ({ name, points, desc }));
+  Object.assign(sec, compileCriteria(ta.value));
   sec.savedAt = Date.now();
   const ok = persist();
   store.del(draftKey(sec.id));
@@ -427,7 +446,7 @@ async function run(f) {
   invalidate('files', 'badges');
   const sec = secById(f.sec);
   const sig = fileSig(f);
-  const opts = { criteria: sec.criteria, prompt: sec.criteriaText, idDigits: state.idDigits, notes: sec.notes, layout: layoutChoice(f) };
+  const opts = { criteria: sec.criteria, rubric: rubricOf(sec), prompt: sec.criteriaText, idDigits: state.idDigits, notes: sec.notes, layout: layoutChoice(f) };
   try {
     const res = await gradeFile(f.file, opts, ctrl.signal);
     if (state.files.get(f.id) !== f || f.abort !== ctrl) return; // 도중에 삭제되었거나 다시 채점 시작됨
@@ -464,6 +483,7 @@ function setLayout(id, value) {
   const next = value === secById(f.sec).layoutDefault ? null : value;
   if (layoutChoice(f) === value && f.layout === next) return;
   f.layout = next;
+  f.edits = null; // 학생 나누기가 바뀌면 직접 고친 값은 맞지 않으므로 비움
   regradeOne(f);
 }
 function regradeAll(secId = null) {
@@ -581,7 +601,33 @@ const fmt = (n) => (n == null ? '' : Number.isInteger(n) ? String(n) : n.toFixed
 const BAD = '(채점 불가)';
 const scoreOf = (st, crit) => { const hit = st.scores?.find((x) => x.name === crit.name); return hit ? hit.score : undefined; };
 const studentLabel = (f, st) => st.name || (f.result.students.length > 1 ? `학생 ${st.idx}` : '');
-const totalOf = (crit) => crit.reduce((s, c) => s + c.points, 0);
+
+// ── 직접 수정한 값 (파일마다 학생 번호별로 보관, 다시 채점해도 유지) ──
+const editOf = (f, st) => f.edits?.[st.idx];
+const hasEdit = (e) => !!e && (Object.keys(e.scores || {}).length > 0 || e.total != null || e.studentId != null || e.name != null);
+const valOf = (f, st, c) => { const e = editOf(f, st); if (e?.scores && c.name in e.scores) return e.scores[c.name]; return st.status === 'success' ? scoreOf(st, c) : undefined; };
+const idOf = (f, st) => editOf(f, st)?.studentId ?? st.studentId ?? '';
+const nameOf = (f, st) => editOf(f, st)?.name ?? studentLabel(f, st);
+const scoreEdited = (f, st) => Object.keys(editOf(f, st)?.scores || {}).length > 0;
+function totalEff(f, st, sec) {
+  const e = editOf(f, st);
+  if (e?.total != null) return e.total;
+  if (st.status === 'success' && !scoreEdited(f, st)) return st.total;
+  if (st.status !== 'success' && !scoreEdited(f, st)) return null;
+  const vals = sec.criteria.map((c) => { const v = valOf(f, st, c); return v == null ? null : v; });
+  return computeTotal(rubricOf(sec), vals);
+}
+const isBad = (f, st) => st.status !== 'success' && !hasEdit(editOf(f, st));
+const critHead = (sec, c) => (rubricOf(sec).mode === 'deduct' ? `${esc(c.name)} (감점)` : `${esc(c.name)} (${fmt(c.points)})`);
+const totalHead = (sec) => { const r = rubricOf(sec); return `총점 (${fmt(r.max)}${r.mode === 'deduct' ? '점 만점' : ''}${r.floor != null ? `, 최저 ${fmt(r.floor)}` : ''})`; };
+const fmtScore = (sec, v) => (v == null ? '' : rubricOf(sec).mode === 'deduct' && v < 0 ? `−${fmt(-v)}` : fmt(v));
+// 학번 순 정렬 (학번이 없으면 맨 뒤, 같으면 학급·순서대로)
+function byStudentId(a, b) {
+  const ia = idOf(a.f, a.st), ib = idOf(b.f, b.st);
+  if (!ia !== !ib) return ia ? -1 : 1;
+  return collator.compare(ia, ib) || collator.compare(a.f.name, b.f.name) || a.st.idx - b.st.idx;
+}
+const studentsOf = (ids) => ids.flatMap((id) => { const f = state.files.get(id); return f.result ? f.result.students.map((st) => ({ f, st })) : []; }).sort(byStudentId);
 const fileTitle = (f) => f.name.replace(/\.pdf$/i, '');
 
 function validResult() {
@@ -622,6 +668,7 @@ function renderResults() {
   }
   if (menuFor) refreshMenu();
 
+  if (editing && body.contains(editing)) return; // 칸을 고치는 중에는 표를 그대로 둔다
   // 채점 중 표가 다시 그려져도 보고 있던 스크롤 위치를 유지
   const viewKey = `${sel.kind}|${sel.sec || ''}|${sel.file || ''}`;
   const prevWraps = [...body.querySelectorAll('.table-wrap')];
@@ -634,13 +681,28 @@ function renderResults() {
   if (keep) body.querySelectorAll('.table-wrap').forEach((w, i) => { if (keep[i]) { w.scrollTop = keep[i][0]; w.scrollLeft = keep[i][1]; } });
 }
 
-function scoreCells(st, crit) {
-  if (st.status !== 'success') return crit.map(() => `<td class="num bad">${BAD}</td>`).join('') + `<td class="num total bad">${BAD}</td>`;
-  return crit.map((c) => { const v = scoreOf(st, c); return v == null ? '<td class="num pending">–</td>' : `<td class="num">${fmt(v)}</td>`; }).join('')
-    + `<td class="num total">${fmt(st.total)}${st.mode === 'scan-demo' ? '<span class="demo-tag">데모</span>' : ''}</td>`;
+const edCell = (f, st, field, html, cls, orig) => {
+  const e = editOf(f, st);
+  const edited = field === 'id' ? e?.studentId != null : field === 'name' ? e?.name != null : field === 'total' ? e?.total != null : e?.scores && field.slice(2) in e.scores;
+  return `<td class="ed ${cls}${edited ? ' edited' : ''}" data-ed="${f.id}|${st.idx}|${esc(field)}" title="${edited ? `직접 수정함 · 원래 값: ${esc(orig ?? '없음')} · 지우면 원래 값으로` : '눌러서 수정'}">${html}</td>`;
+};
+function scoreCells(f, st, sec) {
+  const crit = sec.criteria;
+  const bad = isBad(f, st);
+  const cells = crit.map((c, i) => {
+    const v = valOf(f, st, c);
+    const orig = st.status === 'success' ? fmtScore(sec, scoreOf(st, c)) : BAD;
+    if (v == null) return edCell(f, st, `s:${c.name}`, bad || st.status !== 'success' ? BAD : '–', `num ${bad || st.status !== 'success' ? 'bad' : 'pending'}`, orig);
+    return edCell(f, st, `s:${c.name}`, fmtScore(sec, v), 'num', orig);
+  }).join('');
+  const t = totalEff(f, st, sec);
+  const origT = st.status === 'success' ? fmt(st.total) : BAD;
+  const tag = st.mode === 'scan-demo' && !hasEdit(editOf(f, st)) ? '<span class="demo-tag">데모</span>' : '';
+  return cells + (t == null ? edCell(f, st, 'total', BAD, 'num total bad', origT) : edCell(f, st, 'total', `${fmt(t)}${tag}`, 'num total', origT));
 }
+const idCells = (f, st) => edCell(f, st, 'id', esc(idOf(f, st) || '–'), '', st.studentId || '없음') + edCell(f, st, 'name', esc(nameOf(f, st) || '–'), '', st.name || '없음');
 
-const FOOT = `<p class="muted" style="margin:0">※ 빨간색 ${BAD}는 AI가 학생이 쓴 글을 해석하지 못한 경우예요. 원본 PDF를 직접 확인해 주세요. ‘데모’ 표시는 스캔본에 임시 점수를 보여 준 것입니다. 줄을 누르면 그 학급의 점수표가 열려요.</p>`;
+const FOOT = `<p class="muted" style="margin:0">※ 빨간색 ${BAD}는 AI가 학생이 쓴 글을 해석하지 못한 경우예요. 원본 PDF를 직접 확인해 주세요. ‘데모’ 표시는 스캔본에 임시 점수를 보여 준 것입니다. 점수·학번·이름 칸을 누르면 직접 고칠 수 있어요(고친 칸은 노란색). 학급 이름을 누르면 그 학급의 점수표가 열려요.</p>`;
 
 // 한 영역의 모든 학생을 한 표로 (영역마다 채점 항목이 달라서 표를 영역별로 나눈다)
 function renderSectionTable(sec) {
@@ -650,18 +712,13 @@ function renderSectionTable(sec) {
   const title = `<div class="sec-title"><h2>${esc(secName(sec))}</h2><span class="muted">${ids.length ? `학급 ${ids.length}개 · 학생 ${c.students}명` : '올린 파일 없음'}</span></div>`;
   if (!ids.length) return `${title}<div class="empty">이 영역에 올린 파일이 없어요. <a href="#files" data-go-sec="${sec.id}">업로드 파일</a>에서 올려 주세요.</div>`;
   if (!crit.length) return `${title}<div class="empty">‘${esc(secName(sec))}’의 채점 기준이 아직 저장되지 않았어요. <a href="#settings" data-go-sec="${sec.id}">설정</a>에서 저장하면 바로 채점돼요.</div>`;
-  const head = `<tr><th>학번</th><th>이름</th><th>학급</th><th>쪽</th>${crit.map((x) => `<th class="num">${esc(x.name)} (${fmt(x.points)})</th>`).join('')}<th class="num">총점 (${fmt(totalOf(crit))})</th></tr>`;
-  const rows = [];
+  const head = `<tr><th>학번</th><th>이름</th><th>학급</th><th>쪽</th>${crit.map((x) => `<th class="num">${critHead(sec, x)}</th>`).join('')}<th class="num">${totalHead(sec)}</th></tr>`;
+  const rows = studentsOf(ids).map(({ f, st }) => `<tr>${idCells(f, st)}<td><button type="button" class="linkish" data-open-file="${f.id}">${esc(fileTitle(f))}</button></td><td>${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}</tr>`);
   for (const id of ids) {
     const f = state.files.get(id);
-    if (!f.result) {
-      const label = f.status === 'grading' ? '채점 중…' : '대기 중';
-      rows.push(`<tr class="clickable" data-open-file="${id}"><td>–</td><td>–</td><td>${esc(f.name)}</td><td>–</td>${crit.map(() => `<td class="num pending">${label}</td>`).join('')}<td class="num pending">${label}</td></tr>`);
-      continue;
-    }
-    for (const st of f.result.students) {
-      rows.push(`<tr class="clickable" data-open-file="${id}"><td>${esc(st.studentId || '–')}</td><td>${esc(studentLabel(f, st) || '–')}</td><td>${esc(f.name)}</td><td>${esc(st.pageLabel || '–')}</td>${scoreCells(st, crit)}</tr>`);
-    }
+    if (f.result) continue;
+    const label = f.status === 'grading' ? '채점 중…' : '대기 중';
+    rows.push(`<tr><td>–</td><td>–</td><td><button type="button" class="linkish" data-open-file="${id}">${esc(fileTitle(f))}</button></td><td>–</td>${crit.map(() => `<td class="num pending">${label}</td>`).join('')}<td class="num pending">${label}</td></tr>`);
   }
   return `${title}<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows.join('')}</tbody></table></div>`;
 }
@@ -686,15 +743,16 @@ function renderDetail(f) {
   const sts = r.students;
 
   // 학급(파일 1개)의 학생별 점수표
-  const ok = sts.filter((x) => x.status === 'success').length;
+  const ok = sts.filter((x) => !isBad(f, x)).length;
   const top = `<div class="detail-grid">
     ${stat('학생 수', `${sts.length}명`)}
     ${stat('채점 완료', `${ok}명`, 'good')}
     ${stat('채점 불가', `${sts.length - ok}명`, sts.length - ok ? 'bad' : '')}
     ${stat('나눈 방식', `<span style="font-size:15px">${r.pages ? `${layoutTxt} · ${r.pages}쪽` : '–'}</span>`)}
   </div>`;
-  const head = `<tr><th>#</th><th>학번</th><th>이름</th><th>쪽</th>${crit.map((c) => `<th class="num">${esc(c.name)} (${fmt(c.points)})</th>`).join('')}<th class="num">총점 (${fmt(totalOf(crit))})</th></tr>`;
-  const rows = sts.map((st) => `<tr title="${esc((st.scores || []).filter((x) => x.comment).map((x) => `${x.name}: ${x.comment}`).join('\n'))}"><td>${st.idx}</td><td>${esc(st.studentId || '–')}</td><td>${esc(studentLabel(f, st) || '–')}</td><td>${esc(st.pageLabel || '–')}</td>${scoreCells(st, crit)}</tr>`).join('');
+  const head = `<tr><th>학번</th><th>이름</th><th>쪽</th>${crit.map((c) => `<th class="num">${critHead(sec, c)}</th>`).join('')}<th class="num">${totalHead(sec)}</th><th>채점 근거</th></tr>`;
+  const why = (st) => (st.scores || []).filter((x) => x.comment && x.score != null && !(rubricOf(sec).mode === 'deduct' && x.score === 0)).map((x) => `${x.name}: ${x.comment}`).join(' · ');
+  const rows = studentsOf([f.id]).map(({ st }) => `<tr>${idCells(f, st)}<td>${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}<td class="wrap why">${esc(st.status === 'success' ? why(st) : st.reason || '')}</td></tr>`).join('');
   const hint = r.layoutAuto ? `<p class="muted" style="margin:0">학생 나누기가 틀렸다면 <a href="#files" data-go-sec="${sec.id}">업로드 파일</a>에서 이 파일의 ‘양면/단면’ 버튼을 눌러 바꿔 주세요. 판단 근거: ${esc(r.layoutReason)}</p>` : '';
   return `<div class="stack">${title}${reason}${top}<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>${hint}</div>`;
 }
@@ -756,6 +814,70 @@ function setResult(r) {
   renderResults();
 }
 
+// ── 결과표 칸 직접 수정 ──────────────────────────────────────────────────
+let editing = null; // 수정 중인 칸이 있으면 표를 다시 그리지 않는다
+function startEdit(td) {
+  const [fid, idxStr, field] = td.dataset.ed.split('|');
+  const f = state.files.get(fid);
+  const st = f?.result?.students.find((x) => x.idx === Number(idxStr));
+  if (!f || !st) return;
+  const sec = secById(f.sec);
+  let cur = '';
+  if (field === 'id') cur = idOf(f, st);
+  else if (field === 'name') cur = nameOf(f, st);
+  else if (field === 'total') cur = totalEff(f, st, sec) ?? '';
+  else { const c = sec.criteria.find((x) => x.name === field.slice(2)); cur = c ? valOf(f, st, c) ?? '' : ''; }
+  const input = document.createElement('input');
+  input.className = 'cell-input';
+  input.value = String(cur);
+  input.inputMode = field === 'name' ? 'text' : 'decimal';
+  input.setAttribute('aria-label', '값 수정 (Enter 저장, Esc 취소, 비우면 원래 값)');
+  td.textContent = '';
+  td.appendChild(input);
+  td.classList.add('editing');
+  editing = td;
+  input.focus(); input.select();
+  let done = false;
+  const finish = (save) => {
+    if (done) return; done = true;
+    editing = null;
+    if (save) commitEdit(f, st, sec, field, input.value);
+    renderResults();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+function commitEdit(f, st, sec, field, raw) {
+  const v = raw.trim();
+  f.edits = f.edits || {};
+  const e = f.edits[st.idx] = f.edits[st.idx] || { scores: {} };
+  const rb = rubricOf(sec);
+  if (field === 'id') { if (!v || v === (st.studentId || '')) delete e.studentId; else e.studentId = v.replace(/\s/g, ''); }
+  else if (field === 'name') { if (!v || v === studentLabel(f, st)) delete e.name; else e.name = v.slice(0, 20); }
+  else {
+    let n = v === '' ? null : Number(v.replace(/[−–]/g, '-').replace(/[^\d.\-]/g, ''));
+    if (n != null && Number.isNaN(n)) { toast('숫자로 적어 주세요.'); return; }
+    if (field === 'total') {
+      if (n == null) delete e.total;
+      else { n = Math.min(rb.max, Math.max(0, n)); e.total = n; }
+    } else {
+      const name = field.slice(2);
+      const c = sec.criteria.find((x) => x.name === name);
+      if (!c) return;
+      if (n == null) delete e.scores[name];
+      else {
+        n = rb.mode === 'deduct' ? -Math.min(rb.max, Math.abs(n)) : Math.min(c.points, Math.max(0, n)); // 감점식은 4라고 써도 −4로
+        if (st.status === 'success' && n === scoreOf(st, c)) delete e.scores[name]; else e.scores[name] = n;
+      }
+      delete e.total; // 항목을 고치면 총점은 다시 계산
+    }
+  }
+  if (!hasEdit(e)) delete f.edits[st.idx];
+}
+
 // ── CSV(엑셀) 내려받기: 지금 보고 있는 범위만 ─────────────────────────────
 function exportCsv() {
   const q = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
@@ -768,20 +890,20 @@ function exportCsv() {
     if (!ids.length) continue;
     const crit = sec.criteria;
     if (lines.length) lines.push([]);
-    lines.push(['영역', '학번', '이름', '학급', '쪽', ...crit.map((c) => `${c.name}(${c.points})`), `총점(${totalOf(crit)})`, '상태']);
-    for (const id of ids) {
-      const f = state.files.get(id);
-      if (!f.result) { lines.push([secName(sec), '', '', f.name, '', ...crit.map(() => ''), '', '대기']); continue; }
-      for (const st of f.result.students) {
-        const bad = st.status !== 'success';
-        lines.push([
-          secName(sec), st.studentId ? `="${st.studentId}"` : '', studentLabel(f, st), f.name, st.pageLabel,
-          ...crit.map((c) => (bad ? BAD : fmt(scoreOf(st, c)))),
-          bad ? BAD : fmt(st.total),
-          bad ? `실패: ${st.reason || f.error}` : st.mode === 'scan-demo' ? '성공(데모 점수)' : '성공',
-        ]);
-      }
+    const rb = rubricOf(sec);
+    lines.push(['영역', '학번', '이름', '학급', '쪽', ...crit.map((c) => (rb.mode === 'deduct' ? `${c.name}(감점)` : `${c.name}(${c.points})`)), `총점(${rb.max})`, '상태']);
+    for (const { f, st } of studentsOf(ids)) {
+      const bad = isBad(f, st);
+      const t = totalEff(f, st, sec);
+      const id = idOf(f, st);
+      lines.push([
+        secName(sec), id ? `="${id}"` : '', nameOf(f, st), fileTitle(f), st.pageLabel,
+        ...crit.map((c) => { const v = valOf(f, st, c); return v == null ? (bad ? BAD : '') : fmt(v); }),
+        t == null ? BAD : fmt(t),
+        hasEdit(editOf(f, st)) ? '직접 수정' : bad ? `실패: ${st.reason || f.error}` : st.mode === 'scan-demo' ? '성공(데모 점수)' : '성공',
+      ]);
     }
+    for (const id of ids) { const f = state.files.get(id); if (!f.result) lines.push([secName(sec), '', '', fileTitle(f), '', ...crit.map(() => ''), '', '대기']); }
   }
   if (!lines.length) { toast('내려받을 결과가 없어요.'); return; }
   const csv = '﻿' + lines.map((r) => r.map((v, i) => (i === 1 && String(v).startsWith('="') ? v : q(v))).join(',')).join('\r\n');
@@ -883,8 +1005,10 @@ function initEvents() {
     items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
   });
   $('#result-body').addEventListener('click', (e) => {
-    const tr = e.target.closest('tr[data-open-file]');
-    if (tr) { const f = state.files.get(tr.dataset.openFile); if (f) setResult({ kind: 'file', sec: f.sec, file: f.id }); }
+    const td = e.target.closest('td[data-ed]');
+    if (td && !td.querySelector('input')) { startEdit(td); return; }
+    const op = e.target.closest('[data-open-file]');
+    if (op) { const f = state.files.get(op.dataset.openFile); if (f) setResult({ kind: 'file', sec: f.sec, file: f.id }); }
   });
   $('#export-csv').addEventListener('click', exportCsv);
   window.addEventListener('resize', () => { if (menuFor) placeMenu(); });
@@ -976,8 +1100,8 @@ function applyImport() {
     const keep = state.sections.find((s) => s.name.trim() === x.name && !used.has(s.id)); // 같은 이름이면 올린 파일 유지
     const id = keep ? keep.id : newSecId();
     used.add(id);
-    const items = x.criteriaText.trim() ? parseCriteria(x.criteriaText).items.map(({ name, points, desc }) => ({ name, points, desc })) : [];
-    return { id, name: x.name, criteriaText: x.criteriaText, criteria: items, savedAt: items.length ? Date.now() : null, notes: x.notes, layoutDefault: x.layoutDefault, draft: x.criteriaDraft };
+    const c = x.criteriaText.trim() ? compileCriteria(x.criteriaText) : { criteria: [], rubric: null };
+    return { id, name: x.name, criteriaText: x.criteriaText, criteria: c.criteria, rubric: c.rubric, savedAt: c.criteria.length ? Date.now() : null, notes: x.notes, layoutDefault: x.layoutDefault, draft: x.criteriaDraft };
   });
   for (const s of state.sections) if (!used.has(s.id)) { for (const id of filesOf(s.id)) removeFile(id); store.del(draftKey(s.id)); draftAt.delete(s.id); }
   for (const s of next) {

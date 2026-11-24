@@ -1,3 +1,4 @@
+import { computeTotal, defaultRubric } from './criteria.js?v=7';
 // PDF 판독 + 채점 엔진 (데모)
 // ─────────────────────────────────────────────────────────────────────────────
 // 지금은 데모 모드입니다.
@@ -216,26 +217,64 @@ function keywords(item) {
   return [...out];
 }
 
-function heuristicGrade(text, criteria) {
+function heuristicGrade(text, criteria, rubric) {
   const len = text.replace(/\s/g, '').length;
   const lengthFactor = Math.min(1, len / 1200);
   return criteria.map((c) => {
     const kws = keywords(c);
     const hits = kws.filter((k) => text.includes(k));
     const ratio = kws.length ? hits.length / kws.length : 0.5;
+    if (rubric.mode === 'deduct') {
+      // 데모: 핵심어가 적거나 글이 짧으면 그 항목의 감점 규칙을 앞에서부터 적용
+      const q = 0.5 * ratio + 0.5 * lengthFactor;
+      const n = c.deductions.length ? Math.min(c.deductions.length, Math.round((1 - q) * c.deductions.length)) : 0;
+      const used = c.deductions.slice(0, n);
+      return { name: c.name, points: c.points, score: -used.reduce((s, d) => s + d.pts, 0), comment: used.length ? used.map((d) => `${d.text}`).join(' / ') : '감점 없음' };
+    }
     const score = Math.min(c.points, roundHalf(c.points * Math.min(1, 0.35 + 0.35 * lengthFactor + 0.3 * ratio)));
     const comment = `글 분량 ${len.toLocaleString()}자 · 기준 핵심어 ${hits.length}/${kws.length}개 발견${hits.length ? ` (${hits.slice(0, 4).join(', ')})` : ''}`;
     return { name: c.name, points: c.points, score, comment };
   });
 }
 
-function demoScanGrade(seedStr, criteria) {
+function demoScanGrade(seedStr, criteria, rubric) {
   const r = rng(fnv1a(seedStr));
   if (r() < 0.15) return null; // 판독 불가 예시
   return criteria.map((c) => {
+    if (rubric.mode === 'deduct') {
+      const used = c.deductions.filter(() => r() < 0.3);
+      return { name: c.name, points: c.points, score: -used.reduce((s, d) => s + d.pts, 0), comment: used.length ? `데모 감점: ${used.map((d) => d.text).join(' / ')}` : '스캔본 · 데모 (감점 없음)' };
+    }
     const score = roundHalf(c.points * (0.55 + r() * 0.43));
     return { name: c.name, points: c.points, score: Math.min(c.points, score), comment: '스캔본 · 데모 점수 (실제 AI 연결 전)' };
   });
+}
+
+/**
+ * 실제 AI에게 보낼 채점 지시문. 선생님이 쓴 기준 전문을 한 글자도 빼지 않고 넣고,
+ * 프로그램이 알아낸 채점 방식(배점식/감점식, 만점, 최저점, 백지 점수, 결과표 항목)을 덧붙여
+ * AI가 결과표 형식에 맞춰 답하도록 한다.
+ */
+export function buildGradingPrompt({ prompt, criteria, rubric, notes, idDigits }) {
+  const r = rubric || defaultRubric(criteria);
+  const items = criteria.map((c, i) => r.mode === 'deduct'
+    ? `${i + 1}. ${c.name} — 감점 규칙: ${c.deductions.map((d) => `${d.text}`).join(' / ') || '(없음)'}`
+    : `${i + 1}. ${c.name} — 배점 ${c.points}점${c.desc ? ` (${c.desc.replace(/\n/g, ' ')})` : ''}`).join('\n');
+  return [
+    '당신은 학생 토론 수행평가 답안지를 채점하는 교사 보조입니다. 아래 [선생님 채점 기준]을 그대로 따르세요.',
+    '', '[선생님 채점 기준]', prompt.trim(), '',
+    notes?.trim() ? `[판독 참고 사항]\n${notes.trim()}\n` : '',
+    '[결과표 형식]',
+    r.mode === 'deduct'
+      ? `감점식입니다. 만점 ${r.max}점에서 아래 항목별 감점을 뺍니다. 항목 점수는 감점 합계를 음수로 적으세요(감점 없으면 0).`
+      : `배점식입니다. 항목별로 0점부터 배점까지 점수를 주세요. 총점 ${r.max}점.`,
+    items,
+    r.floor != null ? `총점이 ${r.floor}점보다 낮아지면 ${r.floor}점으로 적으세요.` : '',
+    r.blank != null ? `백지(내용 없음) 답안지는 총점 ${r.blank}점입니다.` : '',
+    `학번은 ${idDigits}자리(학년 1자리+반+번호 2자리), 이름의 글자가 불명확하면 가장 비슷한 글자로 적으세요.`,
+    '글씨를 알아볼 수 없어 판독이 불가하면 status를 "unreadable"로 하세요.',
+    '답은 JSON 하나로만: {"studentId":"","name":"","status":"ok|unreadable|blank","scores":[{"name":"항목 이름","score":숫자,"comment":"근거"}]}',
+  ].filter((x) => x !== '').join('\n');
 }
 
 /**
@@ -245,7 +284,8 @@ function demoScanGrade(seedStr, criteria) {
  * null을 돌려주면 아래 데모 채점이 사용됩니다.
  */
 // prompt: 선생님이 쓴 채점 기준 전체(자유 서술). criteria: 그 안에서 뽑은 결과표 열(항목·배점). pages: 이 학생의 쪽 번호 배열
-async function aiGrade(/* { file, pages, text, prompt, criteria, notes, signal } */) {
+async function aiGrade(/* { file, pages, text, prompt, criteria, rubric, notes, signal, instructions } */) {
+  // instructions: buildGradingPrompt()로 만든 완성된 지시문 → 그대로 AI에게 보내면 됨
   return null;
 }
 
@@ -255,7 +295,8 @@ const pageLabel = (pages) => (pages.length === 1 ? `${pages[0]}쪽` : `${pages[0
  * 파일 하나를 읽어 학생별로 나누고 채점한다.
  * layout: 'auto' | 'duplex'(양면: 2쪽=1명) | 'simplex'(단면: 1쪽=1명)
  */
-export async function gradeFile(file, { criteria, prompt = '', idDigits, notes, layout = 'auto' }, signal) {
+export async function gradeFile(file, { criteria, rubric, prompt = '', idDigits, notes, layout = 'auto' }, signal) {
+  rubric = rubric || defaultRubric(criteria);
   const { pageCount, totalPages, texts, hasText, groups, detected } = await readPdf(file, { layout, idDigits }, signal);
   const effLayout = detected ? detected.layout : layout;
   const single = groups.length === 1;
@@ -267,17 +308,17 @@ export async function gradeFile(file, { criteria, prompt = '', idDigits, notes, 
     const name = single ? extractName(file.name, text) : extractName('', text);
     const stText = text.replace(/\s/g, '').length >= MIN_TEXT_CHARS;
 
-    let scores = await aiGrade({ file, pages, text, prompt, criteria, notes, signal });
+    let scores = await aiGrade({ file, pages, text, prompt, criteria, rubric, notes, signal, instructions: buildGradingPrompt({ prompt, criteria, rubric, notes, idDigits }) });
     let mode = 'ai';
     if (!scores) {
-      if (stText) { scores = heuristicGrade(text, criteria); mode = 'text'; }
-      else { scores = demoScanGrade(`${file.name}|${file.size}|${totalPages}|${pages.join(',')}`, criteria); mode = 'scan-demo'; }
+      if (stText) { scores = heuristicGrade(text, criteria, rubric); mode = 'text'; }
+      else { scores = demoScanGrade(`${file.name}|${file.size}|${totalPages}|${pages.join(',')}`, criteria, rubric); mode = 'scan-demo'; }
     }
     const base = { idx: i + 1, pages, pageLabel: pageLabel(pages), studentId, name, mode, textPreview: text.slice(0, 3000) };
     if (!scores) {
       students.push({ ...base, status: 'fail', reason: '학생이 쓴 글씨를 해석할 수 없어요', scores: criteria.map((c) => ({ name: c.name, points: c.points, score: null, comment: '판독 불가' })), total: null });
     } else {
-      students.push({ ...base, status: 'success', scores, total: roundHalf(scores.reduce((s, x) => s + x.score, 0)) });
+      students.push({ ...base, status: 'success', scores, total: computeTotal(rubric, criteria.map((c) => scores.find((x) => x.name === c.name)?.score ?? 0)) });
     }
   }
   return {

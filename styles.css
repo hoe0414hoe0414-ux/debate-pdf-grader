@@ -153,6 +153,15 @@ td.bad { color: var(--danger); font-weight: 600; }
 td.pending { color: var(--muted); }
 td.wrap { white-space: normal; min-width: 260px; color: var(--muted); }
 tr.clickable { cursor: pointer; }
+td.ed { cursor: text; }
+td.ed:hover { box-shadow: inset 0 0 0 1px #C9D2FF; background: #F7F9FF; }
+td.ed.edited { background: #FFF6DB; box-shadow: inset 3px 0 0 #E5B400; }
+td.ed.edited.bad { color: var(--danger); }
+td.ed.editing { padding: 4px 6px; background: var(--surface); }
+.cell-input { width: 100%; min-width: 64px; font: inherit; padding: 7px 8px; border: 2px solid var(--primary); border-radius: 6px; text-align: inherit; background: #fff; color: var(--text); }
+.linkish { font: inherit; background: none; border: 0; padding: 0; color: var(--primary); cursor: pointer; text-align: left; }
+.linkish:hover { text-decoration: underline; }
+td.why { font-size: 12.5px; max-width: 420px; }
 .demo-tag { display: inline-block; font-size: 11.5px; font-weight: 700; color: var(--warn); background: var(--warn-soft); border-radius: 6px; padding: 1px 7px; margin-left: 6px; vertical-align: 1px; }
 
 .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }

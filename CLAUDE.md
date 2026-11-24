@@ -17,3 +17,5 @@
 | 버전 | 내용 |
 |---|---|
 | 1 | `format`, `version`, `exportedAt`, `idDigits`(4/5), `sections[]` = `{name, criteriaText, criteriaDraft?, layoutDefault(auto/duplex/simplex), notes}`. 영역 탭 이전 형식(`{idDigits, criteriaText, notes}`)도 ‘평가 1’로 불러옴. |
+
+참고: 결과표 항목·채점 방식(배점식/감점식, 만점, 최저점, 백지 점수)은 `criteriaText`에서 매번 다시 해석하므로 설정 파일에 따로 저장하지 않는다. 결과표에서 직접 고친 점수는 채점 결과(브라우저 메모리)이며 설정 파일에 들어가지 않는다.
