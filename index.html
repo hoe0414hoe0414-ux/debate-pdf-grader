@@ -10,8 +10,8 @@
 <link rel="icon" href="assets/icon-192.png?v=2" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=2">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="styles.css?v=3">
-<script type="module" src="app.js?v=3"></script>
+<link rel="stylesheet" href="styles.css?v=4">
+<script type="module" src="app.js?v=4"></script>
 </head>
 <body>
 <div class="layout">
@@ -99,28 +99,34 @@
     <section class="view" id="view-files" data-view="files" hidden>
       <header class="page-head">
         <h1>업로드 파일</h1>
-        <p>평가 영역 탭을 고른 뒤 PDF를 올리면 그 영역의 채점 기준으로 채점해요. 양면·단면을 섞어 올려도 파일마다 알아서 판단하고, 틀리면 ‘양면/단면’ 버튼으로 바로 바꿀 수 있어요.</p>
+        
       </header>
 
       <div class="sec-tabs" id="files-sec-tabs" role="tablist" aria-label="평가 영역"></div>
 
-      <label class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="PDF 파일 선택 또는 끌어다 놓기">
-        <input type="file" id="file-input" accept="application/pdf,.pdf" multiple hidden>
-        <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 27V11M13 18l7-7 7 7"/><path d="M8 26v5h24v-5"/></svg>
-        <strong id="dz-title">PDF 파일을 여기로 끌어다 놓으세요</strong>
-        <span class="muted">또는 클릭해서 선택 · 여러 파일 가능 · 파일은 이 컴퓨터 밖으로 전송되지 않아요</span>
-      </label>
+      <div class="files-grid">
+        <div class="files-left">
+          <label class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="PDF 파일 선택 또는 끌어다 놓기">
+            <input type="file" id="file-input" accept="application/pdf,.pdf" multiple hidden>
+            <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 27V11M13 18l7-7 7 7"/><path d="M8 26v5h24v-5"/></svg>
+            <strong id="dz-title">PDF 파일을 여기로 끌어다 놓으세요</strong>
+            <span class="muted">또는 클릭해서 선택 · 여러 파일 가능 · 파일은 이 컴퓨터 밖으로 전송되지 않아요</span>
+          </label>
+          <div class="notice warn" id="files-notice" hidden></div>
+        </div>
 
-      <div class="notice warn" id="files-notice" hidden></div>
-
-      <div class="toolbar">
-        <span class="muted" id="files-summary">아직 올린 파일이 없어요.</span>
-        <div class="toolbar-actions">
-          <button class="btn" id="regrade-all" type="button" hidden>전체 다시 채점</button>
-          <button class="btn ghost danger-text" id="clear-all" type="button" hidden>전체 삭제</button>
+        <div class="files-right">
+          <div class="toolbar">
+            <span class="muted" id="files-summary">아직 올린 파일이 없어요.</span>
+            <div class="toolbar-actions">
+              <button class="btn small" id="regrade-all" type="button" hidden>전체 다시 채점</button>
+              <button class="btn small ghost danger-text" id="clear-all" type="button" hidden>전체 삭제</button>
+            </div>
+          </div>
+          <ul class="file-list" id="file-list"></ul>
+          <div class="list-empty muted" id="list-empty">올린 파일이 여기에 나타나요.</div>
         </div>
       </div>
-      <ul class="file-list" id="file-list"></ul>
     </section>
 
     <!-- 채점 결과 -->

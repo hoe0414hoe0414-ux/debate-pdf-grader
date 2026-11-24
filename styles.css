@@ -209,7 +209,24 @@ details.preview pre { white-space: pre-wrap; word-break: break-all; font: 13px/1
 .sub { display: flex; flex-direction: column; gap: 10px; padding-top: 18px; border-top: 1px solid var(--border); }
 .sub h3 { margin: 0; font-size: 15px; }
 .sub > p { margin: 0; }
-#view-files > .sec-tabs { margin-bottom: -12px; }
+#view-files { gap: 14px; }
+#view-files > .sec-tabs { margin-bottom: -4px; }
+/* 업로드 화면: 왼쪽 드롭존 · 오른쪽 파일 목록 */
+.files-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.files-left { position: sticky; top: 20px; display: flex; flex-direction: column; gap: 12px; }
+.files-left .dropzone { min-height: 340px; justify-content: center; }
+.files-right { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.files-right .toolbar { min-height: 34px; }
+.list-empty { padding: 40px 16px; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
+.file-list:not(:empty) + .list-empty { display: none; }
+.files-grid .file-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; grid-template-areas: "dot name size remove" "dot seg status remove"; column-gap: 10px; row-gap: 4px; padding: 8px 8px 8px 14px; min-height: 0; }
+.files-grid .file-row .dot { grid-area: dot; align-self: start; margin-top: 7px; }
+.files-grid .file-row .name { grid-area: name; }
+.files-grid .file-row .size { grid-area: size; }
+.files-grid .file-row .seg { grid-area: seg; justify-self: start; }
+.files-grid .file-row .status { grid-area: status; justify-self: end; text-align: right; padding: 2px 6px; }
+.files-grid .file-row .remove { grid-area: remove; align-self: center; }
+@media (max-width: 960px) { .files-grid { grid-template-columns: 1fr; } .files-left { position: static; } .files-left .dropzone { min-height: 0; } }
 
 /* 결과: 영역 이름 탭 + 학급 드롭다운 */
 #view-results { position: relative; }
