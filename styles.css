@@ -166,7 +166,7 @@ details.preview summary { cursor: pointer; font-weight: 600; }
 details.preview pre { white-space: pre-wrap; word-break: break-all; font: 13px/1.7 var(--font); color: var(--muted); max-height: 320px; overflow: auto; margin: 12px 0 0; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 
-.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); background: var(--text); color: #fff; padding: 10px 18px; border-radius: 10px; font-size: 13.5px; box-shadow: 0 6px 24px rgba(0,0,0,.18); z-index: 10; max-width: calc(100vw - 32px); }
+.toast { pointer-events: none; position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); background: var(--text); color: #fff; padding: 10px 18px; border-radius: 10px; font-size: 13.5px; box-shadow: 0 6px 24px rgba(0,0,0,.18); z-index: 10; max-width: calc(100vw - 32px); }
 
 @media (max-width: 860px) {
   .layout { flex-direction: column; }

@@ -121,17 +121,19 @@ function initSettings() {
 
   // 작성 중인 내용은 자동으로 임시 저장 (새로고침·창 닫기에도 유지)
   let vTimer = 0;
-  const saveDraft = () => {
-    clearTimeout(vTimer);
+  const persistDraft = () => {
     if (ta.value === state.criteriaText) { store.del(DRAFT_KEY); draftAt = null; }
     else if (store.set(DRAFT_KEY, ta.value)) draftAt = Date.now();
     else draftAt = -1;
-    renderCriteriaState();
   };
-  ta.addEventListener('input', () => { clearTimeout(vTimer); vTimer = setTimeout(saveDraft, 300); });
-  ta.addEventListener('blur', saveDraft);
-  window.addEventListener('pagehide', saveDraft);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) saveDraft(); });
+  ta.addEventListener('input', () => {
+    $('#criteria-save').disabled = !ta.value.trim(); // 저장 버튼은 즉시 반응
+    clearTimeout(vTimer); vTimer = setTimeout(() => { persistDraft(); renderCriteriaState(); }, 300);
+  });
+  // 포커스가 빠지거나 창을 닫을 때는 저장만 한다 (화면을 다시 그리면 누르려던 버튼이 움직일 수 있음)
+  ta.addEventListener('blur', persistDraft);
+  window.addEventListener('pagehide', persistDraft);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) persistDraft(); });
   // Tab 키로 | 구분자 사이를 쉽게 쓰도록 하지 않음(접근성 유지). Ctrl/Cmd+S 저장 지원.
   ta.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveCriteria(); }
@@ -144,9 +146,11 @@ function initSettings() {
 
   $('#criteria-save').addEventListener('click', saveCriteria);
   $('#criteria-revert').addEventListener('click', () => {
+    clearTimeout(vTimer);
     ta.value = state.criteriaText; store.del(DRAFT_KEY); draftAt = null; renderCriteriaState(); toast('저장된 기준으로 되돌렸어요.');
   });
   $('#criteria-example').addEventListener('click', () => {
+    clearTimeout(vTimer);
     if (ta.value.trim() && ta.value !== EXAMPLE_CRITERIA) {
       ta.value = `${ta.value.replace(/\s+$/, '')}\n\n${EXAMPLE_CRITERIA}`;
       toast('예시를 기존 내용 아래에 붙였어요. 겹치는 부분은 지워 주세요.');
