@@ -366,10 +366,21 @@ function renderResults() {
       const cls = f.status === 'success' ? 'success' : f.status === 'fail' ? 'fail' : '';
       return `<button type="button" class="tab" role="tab" data-tab="${id}" aria-selected="${state.resultTab === id}" title="${esc(f.name)}"><span class="tdot ${cls}"></span>${esc(f.name.replace(/\.pdf$/i, ''))}</button>`;
     })).join('');
+  // 선택된 탭이 보이도록 탭 줄만 가로로 이동 (페이지 전체는 움직이지 않음)
   const sel = tabs.querySelector('[aria-selected="true"]');
-  if (sel) sel.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  if (sel) {
+    const l = sel.offsetLeft - tabs.offsetLeft, r = l + sel.offsetWidth;
+    if (l < tabs.scrollLeft) tabs.scrollLeft = l - 8;
+    else if (r > tabs.scrollLeft + tabs.clientWidth) tabs.scrollLeft = r - tabs.clientWidth + 8;
+  }
 
+  // 채점 중 표가 다시 그려져도 보고 있던 스크롤 위치를 유지
+  const prev = body.querySelector('.table-wrap');
+  const keep = prev && body.dataset.tab === state.resultTab ? [prev.scrollTop, prev.scrollLeft] : null;
   body.innerHTML = state.resultTab === 'all' ? renderAllTable(ids) : renderDetail(state.files.get(state.resultTab));
+  body.dataset.tab = state.resultTab;
+  const next = body.querySelector('.table-wrap');
+  if (keep && next) { next.scrollTop = keep[0]; next.scrollLeft = keep[1]; }
 }
 
 function renderAllTable(ids) {
@@ -450,6 +461,7 @@ function initEvents() {
   input.addEventListener('change', () => { addFiles(input.files); input.value = ''; });
 
   const dz = $('#dropzone');
+  dz.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
   let depth = 0;
   const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
   window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; dz.classList.add('over'); });
