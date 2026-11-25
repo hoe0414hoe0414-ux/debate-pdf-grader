@@ -15,20 +15,27 @@ $ico = Join-Path $icoDir 'icon-v2.ico'
 function Stop-Helper {
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*grading-helper.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
-function Make-Shortcut($target, $args) {
+# 바로가기 만들기: 새 바로가기를 임시 이름으로 먼저 만든 뒤 바꿔 끼운다 → 도중에 실패해도 기존 아이콘이 사라지지 않음
+# (주의: $args 는 PowerShell 예약 변수라 매개변수 이름으로 쓰면 안 됨 — 예전 버전에서 이 때문에 아이콘이 지워짐)
+function Make-Shortcut([string]$target, [string]$arguments) {
   New-Item -ItemType Directory -Force -Path $icoDir | Out-Null
   if (-not (Test-Path $ico)) { try { [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/hoe0414hoe0414-ux/debate-pdf-grader/main/assets/favicon.ico' -OutFile $ico } catch {} }
+  $tmp = Join-Path $desk ($name + '.new.lnk')
+  $s = (New-Object -ComObject WScript.Shell).CreateShortcut($tmp)
+  $s.TargetPath = $target
+  $s.Arguments = $arguments
+  if (Test-Path $ico) { $s.IconLocation = "$ico,0" }
+  $s.Description = $name
+  $s.Save()
+  Move-Item -LiteralPath $tmp -Destination $lnk -Force
   Remove-Item (Join-Path $desk ($name + '.url')) -ErrorAction SilentlyContinue
-  if (Test-Path $lnk) { Remove-Item $lnk -Force }
-  $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
-  $s.TargetPath = $target; $s.Arguments = $args; $s.IconLocation = "$ico,0"; $s.Description = $name; $s.Save()
 }
 # 예전 방식(PC 시작 시 자동 실행)은 지운다
 Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) '토론PDF채점도우미.vbs') -ErrorAction SilentlyContinue
 
 if ($Remove) {
   Stop-Helper
-  Make-Shortcut (Join-Path $env:WINDIR 'explorer.exe') $url
+  try { Make-Shortcut (Join-Path $env:WINDIR 'explorer.exe') $url } catch { Write-Host "바로가기를 되돌리지 못했어요: $($_.Exception.Message)" -ForegroundColor Red }
   Write-Host '채점 도우미를 껐어요. 바탕화면 바로가기는 프로그램만 여는 원래 방식으로 돌렸어요.' -ForegroundColor Green
   exit
 }
@@ -38,7 +45,12 @@ $text = "Set s = CreateObject(""WScript.Shell"")`r`n" +
         "s.Run ""$cmd"", 0, False`r`n" +
         "If WScript.Arguments.Count = 0 Then s.Run ""$url""`r`n"
 [IO.File]::WriteAllText($vbs, $text, [Text.Encoding]::Unicode)   # 한글 경로를 위해 UTF-16
-Make-Shortcut (Join-Path $env:WINDIR 'System32\wscript.exe') ('"' + $vbs + '"')
+try {
+  Make-Shortcut (Join-Path $env:WINDIR 'System32\wscript.exe') ('"' + $vbs + '"')
+} catch {
+  Write-Host "바로가기를 바꾸지 못했어요: $($_.Exception.Message)" -ForegroundColor Red
+  if (-not (Test-Path $lnk)) { try { Make-Shortcut (Join-Path $env:WINDIR 'explorer.exe') $url } catch {} }  # 아이콘만은 꼭 남긴다
+}
 try { ie4uinit.exe -show } catch {}
 Stop-Helper   # 예전 버전이 돌고 있으면 새 버전으로
 Start-Process -FilePath 'wscript.exe' -ArgumentList "`"$vbs`" nobrowser" -WindowStyle Hidden
