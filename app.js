@@ -1710,12 +1710,18 @@ $want = ${JSON.stringify(folder).replace(/\$/g, '`$')}
 $url = '${location.origin}${location.pathname.replace(/[^/]*$/, '')}'
 $bases = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('MyDocuments'), (Join-Path $env:USERPROFILE 'Downloads'), (Join-Path $env:USERPROFILE 'OneDrive'), $env:USERPROFILE) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 $found = @()
-foreach ($b in $bases) { $found += Get-ChildItem -LiteralPath $b -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'helper\\install-launcher.ps1') } }
+foreach ($b in $bases) { $found += Get-ChildItem -LiteralPath $b -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'helper\\grading-helper.ps1') } }
 $found = $found | Sort-Object FullName -Unique
 $pick = ($found | Where-Object { $_.Name -eq $want } | Select-Object -First 1)
 if (-not $pick) { $pick = $found | Select-Object -First 1 }
 if ($pick) {
   Write-Host ('채점 폴더: ' + $pick.FullName)
+  # 폴더에 남아 있는 예전 도우미 파일 대신 최신 파일을 받아 덮어쓴다
+  $raw = 'https://raw.githubusercontent.com/hoe0414hoe0414-ux/debate-pdf-grader/main/helper/'
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
+    foreach ($f in @('install-launcher.ps1', 'grading-helper.ps1')) { Invoke-WebRequest -UseBasicParsing ($raw + $f + '?t=' + [DateTime]::Now.Ticks) -OutFile (Join-Path $pick.FullName ('helper\' + $f)) }
+  } catch { Write-Host ('최신 도우미 파일을 받지 못했어요: ' + $_.Exception.Message) -ForegroundColor Yellow }
   & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pick.FullName 'helper\\install-launcher.ps1') -Root $pick.FullName
 } else {
   Write-Host '채점 폴더를 찾지 못해 프로그램만 여는 아이콘을 만들어요.' -ForegroundColor Yellow
