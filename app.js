@@ -934,16 +934,16 @@ function renderCombined(cls) {
   const rows = list.map((r) => {
     const { cells, sum, missing, wait } = combinedRow(r, secs);
     const first = cells.find((x) => x.it)?.it;
-    const open = first ? ` data-open-st="${first.f.id}|${first.st.idx}"` : '';
+    const open = ` data-rec="${esc(r.key)}"`;
     const scan = first && (first.st.mode === 'scan' || first.st.mode === 'claude');
     const dup = r.dup.length ? ` <span class="demo-tag" title="${esc(r.dup.join(', '))} 영역에 같은 학생이 두 번 이상 있어요. 첫 번째 점수만 더했어요.">중복</span>` : '';
     const link = (v) => `<button type="button" class="linkish"${open} title="이 학생의 채점 분석 보기">${v ? esc(v) : scan ? UNREAD : '–'}</button>`;
-    const sc = cells.map((x) => `<td class="num${x.c.state === 'bad' ? ' bad' : x.c.state !== 'ok' ? ' pending' : ''}"${x.it ? ` data-open-st="${x.it.f.id}|${x.it.st.idx}" title="${esc(secName(x.s))} 채점 분석 보기"` : ' title="이 영역 결과에 없는 학생이에요"'}>${x.c.html}</td>`).join('');
+    const sc = cells.map((x) => `<td class="num${x.c.state === 'bad' ? ' bad' : x.c.state !== 'ok' ? ' pending' : ''}"${x.it ? ` data-rec="${esc(r.key)}" data-rec-sec="${x.s.id}" title="${esc(secName(x.s))} 채점 분석 보기"` : ' title="이 영역 결과에 없는 학생이에요"'}>${x.c.html}</td>`).join('');
     const part = sum != null && missing.length ? ` <small class="part" title="빠진 영역: ${esc(missing.join(', '))}">일부</small>` : '';
     const tot = sum == null ? (wait ? '<span class="wait-tag">채점 전</span>' : '–') : `${fmt(sum)}${part}`;
-    return `<tr class="st-click"${open}><td class="idc stl">${link(r.id)}</td><td class="namec stl">${link(r.name)}${dup}</td>${cls ? '' : `<td class="cls">${esc(clsLabel(r.cls))}</td>`}${sc}<td class="num total${sum == null ? ' pending' : ''}">${tot}</td><td class="vcell">${first ? `<button type="button" class="btn tiny"${open}>분석</button>` : ''}</td></tr>`;
+    return `<tr class="st-click"${open}><td class="idc stl">${link(r.id)}</td><td class="namec stl">${link(r.name)}${dup}</td>${cls ? '' : `<td class="cls">${esc(clsLabel(r.cls))}</td>`}${sc}<td class="num total${sum == null ? ' pending' : ''}">${tot}</td><td class="vcell"><button type="button" class="btn tiny"${open}>분석</button></td></tr>`;
   }).join('');
-  const foot = `<p class="muted foot">※ 같은 학번이면 같은 학생으로 보고 영역 점수를 더해요. 학번을 못 읽은 학생은 같은 학급·같은 이름이면 합쳐요. ‘–’는 그 영역 결과에 없는 학생, ‘일부’는 빠진 영역이 있어 일부만 더한 합계예요. 영역 점수를 누르면 그 영역의 채점 분석이 나와요. 점수를 고치려면 영역 탭에서 고쳐 주세요.</p>`;
+  const foot = `<p class="muted foot">※ 같은 학번이면 같은 학생으로 보고 영역 점수를 더해요. 학번을 못 읽은 학생은 같은 학급·같은 이름이면 합쳐요. ‘–’는 그 영역 결과에 없는 학생, ‘일부’는 빠진 영역이 있어 일부만 더한 합계예요. 학생을 누르면 모든 영역의 답안지와 영역별 점수·채점 근거가 한 창에 이어서 나와요. 점수를 고치려면 영역 탭에서 고쳐 주세요.</p>`;
   return `<div class="stack">${title}${note}<div class="table-wrap"><table class="grid combined"><thead>${head}</thead><tbody>${rows}</tbody></table></div>${foot}</div>`;
 }
 
@@ -1138,7 +1138,7 @@ function commitEdit(f, st, sec, field, raw) {
 }
 
 // ── 학생 답안지 보기 (왼쪽: 답안지 원본, 오른쪽: 채점 근거 · 50:50) ────────────────
-const vw = { fid: null, idx: null, doc: null, docFid: null, token: 0, zoom: 1, lastFocus: null };
+const vw = { mode: 'file', fid: null, idx: null, key: null, cls: null, pos: 0, focusSec: null, docs: new Map(), token: 0, zoom: 1, lastFocus: null };
 const viewerEl = $('#viewer');
 const viewable = () => state.order.map((id) => state.files.get(id)).filter((f) => f.result?.students?.length);
 function openViewer(fid = null, idx = null) {
@@ -1150,6 +1150,7 @@ function openViewer(fid = null, idx = null) {
   const sel = state.result;
   let f = (fid && state.files.get(fid)) || (sel.kind === 'file' && state.files.get(sel.file)) || null;
   if (!f || !list.includes(f)) f = list.find((x) => sel.kind === 'sec' && x.sec === sel.sec) || list[0];
+  vw.mode = 'file';
   vw.fid = f.id;
   const order = studentsOf([f.id]);
   vw.idx = idx != null && order.some((o) => o.st.idx === idx) ? idx : order[0].st.idx;
@@ -1164,9 +1165,32 @@ function closeViewer() {
   viewerEl.hidden = true;
   document.body.classList.remove('modal-open');
   vw.token++;
-  if (vw.doc) { vw.doc.destroy(); vw.doc = null; vw.docFid = null; }
+  for (const d of vw.docs.values()) d.then((x) => x?.destroy()).catch(() => {});
+  vw.docs.clear();
   $('#vw-pages').innerHTML = '';
   vw.lastFocus?.focus?.();
+}
+// 전체 결과표에서 연 창: 한 학생의 모든 영역 (←/→는 학급 안의 다음 학생)
+const comboRecs = () => combineStudents().filter((r) => !vw.cls || r.cls === vw.cls);
+function openCombo(key, secId = null) {
+  vw.mode = 'combo';
+  vw.cls = state.result.kind === 'all' ? state.result.cls || null : null;
+  const recs = comboRecs();
+  if (!recs.length) { vw.mode = 'file'; toast(state.files.size ? '아직 채점된 학생이 없어요.' : '먼저 업로드 파일에서 PDF를 올려 주세요.'); return; }
+  vw.key = recs.some((r) => r.key === key) ? key : recs[0].key;
+  vw.focusSec = secId;
+  vw.lastFocus = document.activeElement;
+  viewerEl.hidden = false;
+  document.body.classList.add('modal-open');
+  renderViewer();
+  $('#vw-close').focus();
+}
+function comboStudent() {
+  const recs = comboRecs();
+  let pos = recs.findIndex((r) => r.key === vw.key);
+  if (pos < 0 && recs.length) { pos = Math.min(vw.pos, recs.length - 1); vw.key = recs[pos].key; } // 학번을 고쳐서 key가 바뀐 경우
+  vw.pos = pos;
+  return { recs, pos, rec: recs[pos] };
 }
 function viewerStudent() {
   const f = state.files.get(vw.fid);
@@ -1176,6 +1200,14 @@ function viewerStudent() {
   return { f, order, pos, st: order[pos]?.st };
 }
 function moveViewer(step) {
+  if (vw.mode === 'combo') {
+    const { recs, pos } = comboStudent();
+    const np = pos + step;
+    if (np < 0 || np >= recs.length) { toast(step > 0 ? '마지막 학생이에요.' : '첫 학생이에요.'); return; }
+    vw.key = recs[np].key; vw.focusSec = null;
+    renderViewer();
+    return;
+  }
   const v = viewerStudent();
   if (!v) return;
   let pos = v.pos + step;
@@ -1191,7 +1223,21 @@ function moveViewer(step) {
   renderViewer();
 }
 const stLabel = (f, st) => `${idOf(f, st) || '학번 판독 전'} ${nameOf(f, st) || ''}`.trim() + ` · ${st.pageLabel || '쪽 정보 없음'}`;
+const recLabel = (r) => `${r.id || '학번 판독 전'} ${r.name || ''}`.trim();
 function renderViewer() {
+  if (vw.mode === 'combo') {
+    const { recs, pos, rec } = comboStudent();
+    if (!rec) { closeViewer(); return; }
+    const cl = [['', '모든 학급']].concat(classList(combineStudents()).map(([k]) => [k, clsLabel(k)]));
+    $('#vw-file').innerHTML = cl.map(([k, l]) => `<option value="${esc(k)}"${(vw.cls || '') === k ? ' selected' : ''}>전체 결과표 · ${esc(l)}</option>`).join('');
+    $('#vw-student').innerHTML = recs.map((r, i) => `<option value="${esc(r.key)}"${i === pos ? ' selected' : ''}>${i + 1}. ${esc(recLabel(r))}</option>`).join('');
+    $('#vw-pos').textContent = `${pos + 1} / ${recs.length}명`;
+    renderViewerRight();
+    const r = $('#vw-why'), b = vw.focusSec && r.querySelector(`[data-sec-block="${vw.focusSec}"]`);
+    r.scrollTop = b ? b.offsetTop - r.offsetTop - 8 : 0;
+    renderViewerPagesCombo(rec);
+    return;
+  }
   const v = viewerStudent();
   if (!v || !v.st) { closeViewer(); return; }
   const { f, order, pos, st } = v;
@@ -1202,7 +1248,32 @@ function renderViewer() {
   renderViewerRight();
   renderViewerPages(f, st);
 }
+function renderComboRight() {
+  const { rec } = comboStudent();
+  if (!rec) return;
+  const secs = usedSections();
+  const { cells, sum, missing } = combinedRow(rec, secs);
+  const maxSum = secs.reduce((a, s) => a + (rubricOf(s).max || 0), 0);
+  const chips = cells.map((x) => `<button type="button" class="vw-chip${x.c.state === 'ok' ? '' : ' off'}" data-jump="${x.s.id}" title="${esc(secName(x.s))}로 이동"><span>${esc(secName(x.s))}</span><b>${x.c.html}</b><small>/ ${fmt(rubricOf(x.s).max)}</small></button>`).join('')
+    + `<div class="vw-chip total"><span>합계</span><b>${sum == null ? '–' : fmt(sum)}</b><small>/ ${fmt(maxSum)}${sum != null && missing.length ? ' · 일부' : ''}</small></div>`;
+  const blocks = cells.map(({ s, it, c }) => {
+    const r = rubricOf(s);
+    const head = `<div class="vw-sec-head"><h4>${esc(secName(s))}</h4><span class="vw-sec-score${c.state === 'ok' ? '' : ' off'}">${c.html}<small> / ${fmt(r.max)}점</small></span></div>`;
+    if (!it) return `<section class="vw-sec" data-sec-block="${s.id}">${head}<div class="why-empty">이 영역 결과에 없는 학생이에요. (그 영역 PDF가 없거나 학번이 다르게 읽혔을 수 있어요)</div></section>`;
+    const th = `<tr><th>학번</th><th>이름</th>${s.criteria.map((x) => `<th class="num">${critHead(s, x)}</th>`).join('')}<th class="num">${totalHead(s)}</th></tr>`;
+    return `<section class="vw-sec" data-sec-block="${s.id}">${head}<div class="muted vw-sec-sub">${esc(fileTitle(it.f))} · ${esc(it.st.pageLabel || '')}</div>
+      <div class="table-wrap vw-table"><table class="grid"><thead>${th}</thead><tbody><tr>${idCells(it.f, it.st)}${scoreCells(it.f, it.st, s)}</tr></tbody></table></div>
+      <div class="vw-reasons">${whyHtml(it.f, it.st, s)}</div></section>`;
+  }).join('');
+  const dup = rec.dup.length ? `<div class="notice warn">${esc(rec.dup.join(', '))} 영역에 같은 학생이 두 번 이상 있어요. 첫 번째 것만 보여 주고 더했어요.</div>` : '';
+  $('#vw-why').innerHTML = `
+    <div class="vw-title"><h3>${esc(rec.id || '')} ${esc(rec.name || '')}${!rec.id && !rec.name ? '<span class="unread">학번·이름 판독 전</span>' : ''}</h3><span class="muted">${esc(clsLabel(rec.cls))} · 모든 영역 채점 분석</span></div>
+    <div class="vw-chips">${chips}</div>${dup}
+    <p class="muted foot">점수 칸을 누르면 바로 고칠 수 있어요 (Enter 저장). 영역 이름을 누르면 그 영역 답안지로 이동해요.</p>
+    ${blocks}`;
+}
 function renderViewerRight() {
+  if (vw.mode === 'combo') { renderComboRight(); return; }
   const v = viewerStudent();
   if (!v?.st) return;
   const { f, st } = v;
@@ -1215,60 +1286,98 @@ function renderViewerRight() {
     <p class="muted foot">칸을 누르면 바로 고칠 수 있어요 (Enter 저장).</p>
     <div class="vw-reasons">${whyHtml(f, st, sec)}</div>`;
 }
-async function renderViewerPages(f, st) {
+const docFor = (f) => { if (!vw.docs.has(f.id)) vw.docs.set(f.id, openPdf(f.file).catch((e) => { vw.docs.delete(f.id); throw e; })); return vw.docs.get(f.id); };
+function dropDocs(keep) {
+  for (const [id, d] of vw.docs) if (!keep.has(id)) { vw.docs.delete(id); d.then((x) => x?.destroy()).catch(() => {}); }
+}
+// parts: [{f, st, sec?, label?}] → 영역마다 제목을 붙여 답안지 쪽을 이어서 그린다
+async function renderParts(parts) {
   const box = $('#vw-pages');
   const token = ++vw.token;
-  if (!f.file) { box.innerHTML = '<div class="why-empty">원본 PDF가 이 브라우저에 없어서 답안지 그림은 볼 수 없어요. 업로드 파일에 이 학급 PDF를 다시 올리면 볼 수 있어요. 오른쪽 채점 분석은 그대로 볼 수 있어요.</div>'; return; }
-  if (!st.pages?.length) { box.innerHTML = '<div class="why-empty">이 학생의 쪽 정보가 없어요. (결과 파일에 쪽 번호가 없음)</div>'; return; }
-  box.innerHTML = st.pages.map((p) => `<figure class="vw-page" data-p="${p}"><div class="vw-loading">${p}쪽 불러오는 중…</div><figcaption>${p}쪽</figcaption></figure>`).join('');
+  dropDocs(new Set(parts.filter((x) => x.f?.file).map((x) => x.f.id)));
+  box.innerHTML = parts.map((x, i) => {
+    const head = x.label ? `<div class="vw-part-head" data-part="${x.sec?.id || i}">${x.label}</div>` : '';
+    if (x.empty) return head + `<div class="why-empty">${x.empty}</div>`;
+    if (!x.f.file) return head + '<div class="why-empty">원본 PDF가 이 브라우저에 없어서 답안지 그림은 볼 수 없어요. 업로드 파일에 이 학급 PDF를 다시 올리면 볼 수 있어요.</div>';
+    if (!x.st.pages?.length) return head + '<div class="why-empty">이 학생의 쪽 정보가 없어요. (결과 파일에 쪽 번호가 없음)</div>';
+    return head + x.st.pages.map((p) => `<figure class="vw-page" data-k="${i}-${p}"><div class="vw-loading">${p}쪽 불러오는 중…</div><figcaption>${x.label ? `${esc(secName(x.sec))} · ` : ''}${p}쪽</figcaption></figure>`).join('');
+  }).join('') || '<div class="why-empty">보여 줄 답안지가 없어요.</div>';
   box.scrollTop = 0;
-  try {
-    if (vw.docFid !== f.id) {
-      if (vw.doc) { vw.doc.destroy(); vw.doc = null; }
-      vw.docFid = null;
-      const doc = await openPdf(f.file);
-      if (token !== vw.token) { doc.destroy(); return; } // 그사이 다른 학생·학급으로 넘어감
-      vw.doc = doc; vw.docFid = f.id;
-    }
-    const doc = vw.doc;
-    const width = Math.max(320, box.clientWidth - 24) * vw.zoom;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    for (const p of st.pages) {
+  if (vw.focusSec) { const h = box.querySelector(`[data-part="${vw.focusSec}"]`); if (h) box.scrollTop = h.offsetTop - box.offsetTop - 8; }
+  const width = Math.max(320, box.clientWidth - 24) * vw.zoom;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  for (const [i, x] of parts.entries()) {
+    if (x.empty || !x.f.file || !x.st.pages?.length) continue;
+    try {
+      const doc = await docFor(x.f);
+      for (const p of x.st.pages) {
+        if (token !== vw.token) return; // 그사이 다른 학생·학급으로 넘어감
+        const fig = box.querySelector(`[data-k="${i}-${p}"]`);
+        if (!fig) continue;
+        if (p > doc.numPages) { fig.querySelector('.vw-loading').textContent = `${p}쪽이 PDF에 없어요`; continue; }
+        const page = await doc.getPage(p);
+        const vp1 = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: (width * dpr) / vp1.width });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+        canvas.style.width = `${Math.round(width)}px`;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        page.cleanup();
+        if (token !== vw.token) return;
+        fig.querySelector('.vw-loading')?.replaceWith(canvas);
+      }
+    } catch (e) {
+      console.error(e);
       if (token !== vw.token) return;
-      const fig = box.querySelector(`[data-p="${p}"]`);
-      if (!fig) continue;
-      if (p > doc.numPages) { fig.querySelector('.vw-loading').textContent = `${p}쪽이 PDF에 없어요`; continue; }
-      const page = await doc.getPage(p);
-      const vp1 = page.getViewport({ scale: 1 });
-      const vp = page.getViewport({ scale: (width * dpr) / vp1.width });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
-      canvas.style.width = `${Math.round(width)}px`;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      page.cleanup();
-      if (token !== vw.token) return;
-      fig.querySelector('.vw-loading')?.replaceWith(canvas);
+      box.querySelectorAll(`[data-k^="${i}-"] .vw-loading`).forEach((el) => { el.textContent = '답안지를 그리지 못했어요. PDF가 손상되었을 수 있어요.'; });
     }
-  } catch (e) {
-    console.error(e);
-    if (token === vw.token) box.innerHTML = '<div class="why-empty bad">답안지를 그리지 못했어요. PDF가 손상되었을 수 있어요.</div>';
   }
 }
+function renderViewerPages(f, st) { return renderParts([{ f, st }]); }
+function renderViewerPagesCombo(rec) {
+  const parts = usedSections().map((sec) => {
+    const it = rec.bySec.get(sec.id);
+    const c = secCell(it);
+    const label = `<b>${esc(secName(sec))}</b><span>${c.html}<small> / ${fmt(rubricOf(sec).max)}점</small></span>`;
+    return it ? { f: it.f, st: it.st, sec, label } : { sec, label, empty: '이 영역 결과에 없는 학생이에요.' };
+  });
+  return renderParts(parts);
+}
+const redrawPages = () => {
+  if (vw.mode === 'combo') { const { rec } = comboStudent(); if (rec) { vw.focusSec = null; renderViewerPagesCombo(rec); } return; }
+  const v = viewerStudent(); if (v?.st) renderViewerPages(v.f, v.st);
+};
 function initViewer() {
   $('#vw-close').addEventListener('click', closeViewer);
   viewerEl.addEventListener('click', (e) => { if (e.target === viewerEl) closeViewer(); });
   $('#vw-prev').addEventListener('click', () => moveViewer(-1));
   $('#vw-next').addEventListener('click', () => moveViewer(1));
-  $('#vw-file').addEventListener('change', (e) => { vw.fid = e.target.value; vw.idx = studentsOf([vw.fid])[0]?.st.idx; renderViewer(); });
-  $('#vw-student').addEventListener('change', (e) => { vw.idx = Number(e.target.value); renderViewer(); });
-  const zoom = (z) => { vw.zoom = Math.min(2.5, Math.max(0.6, Math.round(z * 10) / 10)); $('#vw-zoom-v').textContent = `${Math.round(vw.zoom * 100)}%`; const v = viewerStudent(); if (v?.st) renderViewerPages(v.f, v.st); };
+  $('#vw-file').addEventListener('change', (e) => {
+    if (vw.mode === 'combo') { vw.cls = e.target.value || null; vw.key = comboRecs()[0]?.key; vw.pos = 0; vw.focusSec = null; renderViewer(); return; }
+    vw.fid = e.target.value; vw.idx = studentsOf([vw.fid])[0]?.st.idx; renderViewer();
+  });
+  $('#vw-student').addEventListener('change', (e) => { if (vw.mode === 'combo') { vw.key = e.target.value; vw.focusSec = null; } else vw.idx = Number(e.target.value); renderViewer(); });
+  const zoom = (z) => { vw.zoom = Math.min(2.5, Math.max(0.6, Math.round(z * 10) / 10)); $('#vw-zoom-v').textContent = `${Math.round(vw.zoom * 100)}%`; redrawPages(); };
   $('#vw-zoom-out').addEventListener('click', () => zoom(vw.zoom - 0.2));
   $('#vw-zoom-in').addEventListener('click', () => zoom(vw.zoom + 0.2));
   $('#vw-why').addEventListener('click', (e) => {
     const td = e.target.closest('td[data-ed]');
-    if (td && !td.querySelector('input')) startEdit(td, () => { renderViewerRight(); const v = viewerStudent(); if (v) $('#vw-student').innerHTML = v.order.map((o, i) => `<option value="${o.st.idx}"${o.st.idx === vw.idx ? ' selected' : ''}>${i + 1}. ${esc(stLabel(v.f, o.st))}</option>`).join(''); });
+    if (td && !td.querySelector('input')) {
+      startEdit(td, () => {
+        if (vw.mode === 'combo') { const keep = $('#vw-why').scrollTop; const { recs, pos } = comboStudent(); renderViewerRight(); $('#vw-why').scrollTop = keep; $('#vw-student').innerHTML = recs.map((r, i) => `<option value="${esc(r.key)}"${i === pos ? ' selected' : ''}>${i + 1}. ${esc(recLabel(r))}</option>`).join(''); return; }
+        renderViewerRight(); const v = viewerStudent(); if (v) $('#vw-student').innerHTML = v.order.map((o, i) => `<option value="${o.st.idx}"${o.st.idx === vw.idx ? ' selected' : ''}>${i + 1}. ${esc(stLabel(v.f, o.st))}</option>`).join('');
+      });
+      return;
+    }
+    const j = e.target.closest('[data-jump]'); // 영역 이름 → 그 영역 답안지·분석으로 이동
+    if (j) {
+      const box = $('#vw-pages'), h = box.querySelector(`[data-part="${j.dataset.jump}"]`);
+      if (h) box.scrollTo({ top: h.offsetTop - box.offsetTop - 8, behavior: 'smooth' });
+      const r = $('#vw-why'), b2 = r.querySelector(`[data-sec-block="${j.dataset.jump}"]`);
+      if (b2) r.scrollTo({ top: b2.offsetTop - r.offsetTop - 8, behavior: 'smooth' });
+    }
   });
   document.addEventListener('keydown', (e) => {
     if (viewerEl.hidden) return;
@@ -1287,7 +1396,7 @@ function initViewer() {
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   });
   let rt = 0;
-  window.addEventListener('resize', () => { if (viewerEl.hidden) return; clearTimeout(rt); rt = setTimeout(() => { const v = viewerStudent(); if (v?.st) renderViewerPages(v.f, v.st); }, 250); });
+  window.addEventListener('resize', () => { if (viewerEl.hidden) return; clearTimeout(rt); rt = setTimeout(redrawPages, 250); });
 }
 
 // ── CSV(엑셀) 내려받기: 지금 보고 있는 범위만 ─────────────────────────────
@@ -1445,11 +1554,13 @@ function initEvents() {
     const op = e.target.closest('[data-open-file]');
     if (op) { const f = state.files.get(op.dataset.openFile); if (f) setResult({ kind: 'file', sec: f.sec, file: f.id }); return; }
     if (e.target.closest('a, input, select')) return;
+    const rc = e.target.closest('[data-rec]'); // 전체 결과표: 그 학생의 모든 영역을 한 창에
+    if (rc) { openCombo(rc.dataset.rec, e.target.closest('[data-rec-sec]')?.dataset.recSec || null); return; }
     const os = e.target.closest('[data-open-st]'); // 학생(줄·학번·이름·영역 점수)을 누르면 채점 분석
     if (os) { const [fid, idx] = os.dataset.openSt.split('|'); openViewer(fid, Number(idx)); }
   });
   $('#export-csv').addEventListener('click', exportCsv);
-  $('#view-answers').addEventListener('click', () => openViewer());
+  $('#view-answers').addEventListener('click', () => (validResult().kind === 'all' ? openCombo(null) : openViewer()));
   window.addEventListener('resize', () => { if (menuFor) placeMenu(); });
 
   // 올린 파일·결과는 자동 저장되므로 창을 닫을 때 경고하지 않는다. 저장 중이면 바로 마저 저장.
