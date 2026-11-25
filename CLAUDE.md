@@ -19,7 +19,7 @@
 | 1 | `format`, `version`, `exportedAt`, `idDigits`(4/5), `sections[]` = `{name, criteriaText, criteriaDraft?, layoutDefault(auto/duplex/simplex), notes}`. 영역 탭 이전 형식(`{idDigits, criteriaText, notes}`)도 ‘평가 1’로 불러옴. |
 | 2 | v1 + `sections[].keywords`(파일 이름 키워드, 쉼표 구분 문자열 — 업로드 PDF를 영역에 자동 분류. 예: `1차시, 입론`). v1 파일은 빈 값. |
 
-참고: 결과표 항목·채점 방식(배점식/감점식, 만점, 최저점, 백지 점수)은 `criteriaText`에서 매번 다시 해석하므로 설정 파일에 따로 저장하지 않는다. 결과표에서 직접 고친 점수는 채점 결과(브라우저 메모리)이며 설정 파일에 들어가지 않는다.
+참고: 결과표 항목·채점 방식(배점식/감점식, 만점, 최저점, 백지 점수)은 `criteriaText`에서 매번 다시 해석하므로 설정 파일에 따로 저장하지 않는다. 올린 PDF·채점 결과·직접 고친 점수는 브라우저 IndexedDB `dpg-data`(meta/blob)에 자동 저장되며 설정 파일에 들어가지 않는다(GitHub에도 저장 안 함).
 
 ## Claude 채점 요청/결과 양식 (반드시 함께 수정)
 
@@ -33,4 +33,4 @@ API 키 없이 Claude(구독)가 채점한다. 앱이 요청(`request.json` + PD
 | 결과 | 1 | `format`, `version`, `requestId`, `gradedAt`, `grader`, `files[]`={fileId,name,section,sectionId,pages,layout,students[]={pages,studentId,name,status(ok/unreadable/blank),scores[]={name,score,comment},total,comment}} |
 | 결과 | 2 | v1 + `scores[].deductions[]`={keyword,points}(감점 핵심 키워드), `scores[].answer`(그 항목에 학생이 쓴 답, 마크다운), `students[].answer`(답안 전체, 선택). v1 파일은 빈 값으로 읽음. |
 
-채점 폴더 구조: `<연결 폴더>/채점요청/<requestId>/{request.json, GRADING.md, pdf/…, status.json, result.json}`, 도우미 신호 `채점요청/helper.json`. 도우미: `helper/grading-helper.ps1`(+`start-helper.bat`, 폴더 연결 시 자동 복사)이 `claude -p`로 채점.
+채점 폴더 구조: `<연결 폴더>/채점요청/<requestId>/{request.json, GRADING.md, pdf/…, status.json, result.json}`, 도우미 신호 `채점요청/helper.json`. 도우미: `helper/grading-helper.ps1`(+`install-autostart.ps1`, `start-helper.bat`=‘채점 도우미 켜기.bat’, `stop-helper.bat`=‘채점 도우미 끄기.bat’, 폴더 연결·앱 열 때 자동 복사)이 `claude -p`로 채점. 켜기 한 번이면 시작프로그램(.vbs)에 등록되어 창 없이 상시 실행, 중복 실행은 뮤텍스로 막음.

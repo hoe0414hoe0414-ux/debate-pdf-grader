@@ -1,6 +1,10 @@
 ﻿# 채점 도우미: 이 폴더의 채점요청을 지켜보다가 Claude Code(구독 로그인)로 채점합니다.
-# 실행: 같은 폴더의 ‘채점 도우미 켜기.bat’ 더블클릭. 끄기: 창 닫기.
+# 처음 한 번 ‘채점 도우미 켜기.bat’을 더블클릭하면, 그 뒤로는 PC를 켤 때마다 창 없이(백그라운드) 자동으로 켜집니다.
+# 끄기: ‘채점 도우미 끄기.bat’ (자동 실행도 해제)
 $ErrorActionPreference = 'Continue'
+# 이미 켜져 있으면 하나만 돌도록
+$mutex = New-Object Threading.Mutex($false, 'Local\DebatePdfGraderHelper')
+if (-not $mutex.WaitOne(0)) { exit }
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $root = Split-Path -Parent $PSScriptRoot
 if (-not (Test-Path (Join-Path $root '채점요청'))) { $root = $PSScriptRoot }

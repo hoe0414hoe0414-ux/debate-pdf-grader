@@ -1,5 +1,5 @@
 @echo off
-rem Debate PDF Grader - grading helper (watches this folder and grades with Claude Code)
+rem Debate PDF Grader - install grading helper: run hidden now and at every Windows sign-in
 chcp 65001 >nul
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0helper\grading-helper.ps1"
-pause
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0helper\install-autostart.ps1" -Root "%~dp0."
+timeout /t 8

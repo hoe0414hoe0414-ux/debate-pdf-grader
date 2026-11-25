@@ -108,6 +108,7 @@ const dirty = new Set();
 let rafId = 0;
 function invalidate(...parts) {
   parts.forEach((p) => dirty.add(p));
+  if (parts.includes('files') || parts.includes('results')) scheduleSave();
   if (!rafId) rafId = requestAnimationFrame(flush);
 }
 function flush() {
@@ -1026,6 +1027,7 @@ function commitEdit(f, st, sec, field, raw) {
     }
   }
   if (!hasEdit(e)) delete f.edits[st.idx];
+  scheduleSave();
 }
 
 // ── 학생 답안지 보기 (왼쪽: 답안지 원본, 오른쪽: 채점 근거 · 50:50) ────────────────
@@ -1324,9 +1326,8 @@ function initEvents() {
   $('#view-answers').addEventListener('click', () => openViewer());
   window.addEventListener('resize', () => { if (menuFor) placeMenu(); });
 
-  window.addEventListener('beforeunload', (e) => {
-    if (state.files.size) { e.preventDefault(); e.returnValue = ''; }
-  });
+  // 올린 파일·결과는 자동 저장되므로 창을 닫을 때 경고하지 않는다. 저장 중이면 바로 마저 저장.
+  window.addEventListener('pagehide', () => { if (saveTimer) { clearTimeout(saveTimer); saveFiles(); } });
 }
 
 // ── 설정 파일 내보내기 / 불러오기 ─────────────────────────────────────────────
@@ -1607,7 +1608,9 @@ async function installHelper() {
   try {
     const get = async (u) => { const r = await fetch(u, { cache: 'no-cache' }); if (!r.ok) throw new Error(u); return new Uint8Array(await r.arrayBuffer()); };
     await bridge.writeFile(cc.dir, 'helper/grading-helper.ps1', await get('./helper/grading-helper.ps1'));
+    await bridge.writeFile(cc.dir, 'helper/install-autostart.ps1', await get('./helper/install-autostart.ps1'));
     await bridge.writeFile(cc.dir, '채점 도우미 켜기.bat', await get('./helper/start-helper.bat'));
+    await bridge.writeFile(cc.dir, '채점 도우미 끄기.bat', await get('./helper/stop-helper.bat'));
   } catch (e) { console.warn('도우미 파일을 넣지 못함', e); }
 }
 // 채점 폴더 연결 (Chrome/Edge)
@@ -1616,7 +1619,7 @@ async function connectFolder() {
   try {
     if (cc.dir && cc.perm !== 'granted') {
       cc.perm = await bridge.dirPermission(cc.dir, true);
-      if (cc.perm === 'granted') { renderClaude(); pollFolder(); return; }
+      if (cc.perm === 'granted') { await installHelper(); renderClaude(); pollFolder(); return; }
     }
     const h = await window.showDirectoryPicker({ id: 'dpg-grading', mode: 'readwrite' });
     cc.dir = h; cc.perm = await bridge.dirPermission(h, true);
@@ -1679,7 +1682,7 @@ function renderClaude() {
   const lines = [];
   if (connected) {
     if (helperOn && cc.helperErr) lines.push(`<span class="bad">● 채점 도우미: ${esc(cc.helperErr)}</span>`);
-    else lines.push(helperOn ? '<span class="ok">● 채점 도우미 켜짐 — ‘Claude 채점 시작’을 누르면 자동으로 채점해요</span>' : `<span class="muted">○ 채점 도우미가 꺼져 있어요. 연결한 폴더의 ‘채점 도우미 켜기.bat’을 더블클릭하거나, 프로젝트 채팅에서 Claude에게 “채점해줘”라고 말해 주세요.</span>`);
+    else lines.push(helperOn ? '<span class="ok">● 채점 도우미 켜짐(백그라운드) — ‘Claude 채점 시작’만 누르면 자동으로 채점해요</span>' : `<span class="muted">○ 채점 도우미가 아직 켜지지 않았어요. 연결한 폴더의 <b>‘채점 도우미 켜기.bat’을 처음 한 번만</b> 더블클릭해 주세요. 그 뒤로는 PC를 켤 때마다 창 없이 백그라운드에서 자동으로 켜져요.</span>`);
   }
   for (const p of cc.pending.slice(-3).reverse()) {
     const pr = cc.progress[p.id];
@@ -1702,9 +1705,91 @@ function initClaude() {
   bridge.loadDirHandle().then(async (h) => {
     if (!h) return renderClaude();
     cc.dir = h; cc.perm = await bridge.dirPermission(h, false);
+    if (cc.perm === 'granted') installHelper(); // 도우미 파일을 늘 최신으로 (켜져 있는 도우미는 다음 PC 시작 때 새 버전)
     renderClaude(); pollFolder();
   });
   renderClaude();
+}
+
+// ── 올린 PDF·채점 결과 자동 저장 (이 컴퓨터 브라우저의 IndexedDB, 인터넷으로 나가지 않음) ──────
+// meta: 파일 정보·결과·직접 고친 값 (바뀔 때만 다시 씀) / blob: PDF 원본 (올릴 때 한 번만 씀)
+const DATA_DB = 'dpg-data';
+let dataDb = null;
+function openDataDb() {
+  if (dataDb) return dataDb;
+  dataDb = new Promise((resolve, reject) => {
+    const r = indexedDB.open(DATA_DB, 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('meta', { keyPath: 'id' }); r.result.createObjectStore('blob'); };
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  }).catch((e) => { console.warn('자동 저장을 쓸 수 없어요', e); dataDb = null; return null; });
+  return dataDb;
+}
+const savedMeta = new Map(); // id -> 마지막으로 저장한 JSON
+const savedBlob = new Set(); // PDF를 이미 저장한 id
+let saveTimer = 0, restoring = false;
+const metaOf = (f) => ({ id: f.id, sec: f.sec, name: f.name, size: f.size, status: f.status === 'grading' ? 'pending' : f.status, result: f.result, error: f.error, sig: f.sig, layout: f.layout, edits: f.edits || null, hasFile: !!f.file });
+function scheduleSave() { if (restoring) return; clearTimeout(saveTimer); saveTimer = setTimeout(saveFiles, 600); }
+async function saveFiles() {
+  saveTimer = 0;
+  const db = await openDataDb();
+  if (!db) return;
+  const puts = [], blobs = [], dels = [];
+  for (const f of state.files.values()) {
+    const m = metaOf(f);
+    const j = JSON.stringify(m);
+    if (savedMeta.get(f.id) !== j) puts.push([f.id, m, j]);
+    if (f.file && !savedBlob.has(f.id)) blobs.push(f);
+  }
+  for (const id of savedMeta.keys()) if (!state.files.has(id)) dels.push(id);
+  if (!puts.length && !blobs.length && !dels.length) return;
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(['meta', 'blob'], 'readwrite');
+      for (const [, m] of puts) tx.objectStore('meta').put(m);
+      for (const f of blobs) tx.objectStore('blob').put(f.file, f.id);
+      for (const id of dels) { tx.objectStore('meta').delete(id); tx.objectStore('blob').delete(id); }
+      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
+    });
+    for (const [id, , j] of puts) savedMeta.set(id, j);
+    for (const f of blobs) savedBlob.add(f.id);
+    for (const id of dels) { savedMeta.delete(id); savedBlob.delete(id); }
+  } catch (e) {
+    console.warn(e);
+    toast(e?.name === 'QuotaExceededError' ? '저장 공간이 부족해 일부 PDF가 자동 저장되지 않았어요. 쓰지 않는 파일을 지워 주세요.' : '자동 저장 중 문제가 생겼어요.');
+  }
+}
+async function restoreFiles() {
+  const db = await openDataDb();
+  if (!db) return 0;
+  const [metas, blobs] = await new Promise((resolve, reject) => {
+    const tx = db.transaction(['meta', 'blob'], 'readonly');
+    const m = tx.objectStore('meta').getAll();
+    const bk = tx.objectStore('blob').getAllKeys();
+    tx.oncomplete = () => resolve([m.result || [], new Set(bk.result || [])]);
+    tx.onerror = () => reject(tx.error);
+  }).catch(() => [[], new Set()]);
+  if (!metas.length) return 0;
+  restoring = true;
+  for (const m of metas) {
+    if (state.files.has(m.id)) continue;
+    const f = { ...m, sec: secById(m.sec) ? m.sec : state.sections[0].id, file: null, abort: null };
+    delete f.hasFile;
+    if (m.hasFile && blobs.has(m.id)) {
+      f.file = await new Promise((resolve) => { const r = db.transaction('blob').objectStore('blob').get(m.id); r.onsuccess = () => resolve(r.result || null); r.onerror = () => resolve(null); });
+      if (f.file && !(f.file instanceof File)) f.file = new File([f.file], m.name, { type: 'application/pdf' });
+      if (f.file) savedBlob.add(m.id);
+    }
+    state.files.set(f.id, f);
+    savedMeta.set(f.id, JSON.stringify(metaOf(f)));
+    const n = Number(String(f.id).replace(/\D/g, '')); if (n > seq) seq = n;
+    if (f.file && (f.status === 'pending' || !f.result)) { f.status = 'pending'; f.result = null; queue.push(f.id); }
+  }
+  restoring = false;
+  sortFiles();
+  invalidate('files', 'results', 'badges', 'sectabs');
+  pump();
+  return metas.length;
 }
 
 // ── 시작 ────────────────────────────────────────────────────────────────
@@ -1717,6 +1802,8 @@ initViewer();
 if (!location.hash && state.sections.some((s) => s.criteria.length)) history.replaceState(null, '', '#files');
 route();
 renderBadges();
+restoreFiles().then((n) => { if (n) toast(`지난번에 올린 파일 ${n}개와 채점 결과를 불러왔어요.`); }).catch((e) => console.warn(e));
+navigator.storage?.persist?.().catch(() => {}); // 브라우저가 저장한 PDF를 임의로 지우지 않도록 요청
 
 // 첫 화면을 그린 뒤 브라우저가 한가할 때 PDF 엔진을 미리 데워 둔다 → 업로드 순간 렉 방지
 const idle = (fn, t) => ('requestIdleCallback' in window ? requestIdleCallback(fn, { timeout: t }) : setTimeout(fn, t));
