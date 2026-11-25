@@ -4,9 +4,9 @@
 // ※ 양식(REQUEST_VERSION / RESULT_VERSION)을 바꾸면 CLAUDE.md 표, GRADING.md, examples/ 를 함께 고칠 것.
 
 export const REQUEST_FORMAT = 'debate-pdf-grader-request';
-export const REQUEST_VERSION = 1;
+export const REQUEST_VERSION = 2;
 export const RESULT_FORMAT = 'debate-pdf-grader-result';
-export const RESULT_VERSION = 1;
+export const RESULT_VERSION = 2;
 export const REQUESTS_DIR = '채점요청';
 
 export const safeName = (s) => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/\s+$/g, '').slice(0, 80) || '이름없음';
@@ -124,16 +124,22 @@ export function normalizeResult(obj) {
       section: String(f.section || f.sectionName || ''),
       sectionId: String(f.sectionId || ''),
       pages: num(f.pages),
-      layout: ['duplex', 'simplex'].includes(f.layout) ? f.layout : null,
+      layout: ['duplex', 'simplex', 'set'].includes(f.layout) ? f.layout : null,
       students: (Array.isArray(f.students) ? f.students : []).map((s, i) => ({
         idx: i + 1,
         pages: Array.isArray(s.pages) ? s.pages.map(Number).filter((n) => n > 0) : [],
         studentId: String(s.studentId ?? '').replace(/\s/g, ''),
         name: String(s.name ?? '').trim(),
         status: ['ok', 'unreadable', 'blank'].includes(s.status) ? s.status : 'ok',
-        scores: (Array.isArray(s.scores) ? s.scores : []).map((x) => ({ name: String(x.name || ''), score: num(x.score), comment: String(x.comment || '') })),
+        // v2: deductions(감점 키워드), answer(그 항목에 학생이 쓴 답) — v1 파일에는 없으므로 빈 값
+        scores: (Array.isArray(s.scores) ? s.scores : []).map((x) => ({
+          name: String(x.name || ''), score: num(x.score), comment: String(x.comment || ''),
+          deductions: (Array.isArray(x.deductions) ? x.deductions : []).map((d) => (typeof d === 'string' ? { keyword: d, points: null } : { keyword: String(d?.keyword || d?.reason || '').slice(0, 40), points: num(d?.points) })).filter((d) => d.keyword),
+          answer: String(x.answer || ''),
+        })),
         total: num(s.total),
         comment: String(s.comment || ''),
+        answer: String(s.answer || ''),
       })),
     })),
   };

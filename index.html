@@ -10,8 +10,8 @@
 <link rel="icon" href="assets/icon-192.png?v=2" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=2">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="styles.css?v=9">
-<script type="module" src="app.js?v=9"></script>
+<link rel="stylesheet" href="styles.css?v=10">
+<script type="module" src="app.js?v=10"></script>
 </head>
 <body>
 <div class="layout">
@@ -83,9 +83,14 @@
             </div>
 
             <div class="sub">
+              <h3>파일 이름 키워드 <small class="muted">(차시 구분)</small></h3>
+              <input id="sec-keywords" class="input plain" maxlength="200" placeholder="예: 1차시, 입론" aria-label="파일 이름 키워드" title="올린 PDF 이름에 이 말이 들어 있으면 이 영역으로 자동 분류해요. 여러 개는 쉼표로.">
+            </div>
+
+            <div class="sub">
               <h3>양면 / 단면</h3>
               <div class="options" role="radiogroup" aria-label="양면/단면 기본값">
-                <label class="option sm"><input type="radio" name="layoutDefault" value="auto"><span>자동 판단</span></label>
+                <label class="option sm"><input type="radio" name="layoutDefault" value="auto"><span>자동 판단 <small>(반복 주기)</small></span></label>
                 <label class="option sm"><input type="radio" name="layoutDefault" value="duplex"><span>모두 양면 <small>(2쪽=1명)</small></span></label>
                 <label class="option sm"><input type="radio" name="layoutDefault" value="simplex"><span>모두 단면 <small>(1쪽=1명)</small></span></label>
               </div>
@@ -115,7 +120,7 @@
             <input type="file" id="file-input" accept="application/pdf,.pdf" multiple hidden>
             <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 27V11M13 18l7-7 7 7"/><path d="M8 26v5h24v-5"/></svg>
             <strong id="dz-title">PDF 파일을 여기로 끌어다 놓으세요</strong>
-            <span class="muted">또는 클릭해서 선택 · 여러 파일 가능 · 파일은 이 컴퓨터 밖으로 전송되지 않아요</span>
+            <span class="muted" id="dz-sub">또는 클릭해서 선택 · 여러 파일 가능 · 파일은 이 컴퓨터 밖으로 전송되지 않아요</span>
           </label>
           <div class="notice warn" id="files-notice" hidden></div>
 
@@ -155,12 +160,32 @@
       <div class="tabs-row">
         <div class="tabs" id="result-tabs" role="tablist"></div>
         <button class="btn" id="import-result" type="button">Claude 결과 불러오기</button>
+        <button class="btn" id="view-answers" type="button">학생 답안지 보기</button>
         <button class="btn" id="export-csv" type="button" hidden>엑셀(CSV) 내려받기</button>
       </div>
       <div id="result-body"></div>
       <div class="menu" id="tab-menu" role="menu" hidden></div>
     </section>
   </main>
+</div>
+ <div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-label="학생 답안지 보기" hidden>
+  <div class="viewer-box">
+    <header class="viewer-head">
+      <select id="vw-file" class="vw-select" aria-label="학급"></select>
+      <div class="vw-nav">
+        <button class="btn small" id="vw-prev" type="button" title="이전 학생 (←)">◀ 이전</button>
+        <select id="vw-student" class="vw-select" aria-label="학생"></select>
+        <button class="btn small" id="vw-next" type="button" title="다음 학생 (→)">다음 ▶</button>
+        <span class="muted" id="vw-pos"></span>
+      </div>
+      <div class="vw-zoom"><button class="btn small ghost" id="vw-zoom-out" type="button" aria-label="축소">−</button><span id="vw-zoom-v">100%</span><button class="btn small ghost" id="vw-zoom-in" type="button" aria-label="확대">+</button></div>
+      <button class="btn small" id="vw-close" type="button">닫기 ✕</button>
+    </header>
+    <div class="viewer-body">
+      <div class="vw-left" id="vw-pages" tabindex="0" aria-label="답안지"></div>
+      <div class="vw-right" id="vw-why"></div>
+    </div>
+  </div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </body>

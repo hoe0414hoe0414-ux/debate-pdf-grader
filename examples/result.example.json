@@ -1,30 +1,34 @@
 {
   "format": "debate-pdf-grader-result",
-  "version": 1,
-  "requestId": "20261124-120000",
-  "gradedAt": "2026-11-24T12:10:00+09:00",
+  "version": 2,
+  "requestId": "20261125-090000",
+  "gradedAt": "2026-11-25T09:10:00+09:00",
   "grader": "Claude",
   "files": [
     {
       "fileId": "f1",
-      "name": "2학년 3반.pdf",
-      "section": "입론서",
-      "pages": 4,
+      "name": "통합과학2 토론 1차시 (1-1).pdf",
+      "section": "입론서 작성",
+      "pages": 6,
       "layout": "duplex",
       "students": [
         {
-          "pages": [1, 2], "studentId": "20302", "name": "이논리", "status": "ok",
+          "pages": [1, 2], "studentId": "10102", "name": "이논리", "status": "ok",
           "scores": [
-            { "name": "주장", "score": 0, "comment": "감점 없음" },
-            { "name": "근거", "score": -4, "comment": "주장1 근거가 주장을 뒷받침하지 못함" },
-            { "name": "주장에 대한 이유", "score": 0, "comment": "" },
-            { "name": "출처", "score": -4, "comment": "주장2 출처 없음" }
+            { "name": "나의 주장", "score": 0, "deductions": [], "answer": "- 입장: **찬성**\n- 원자력 발전을 확대해야 한다" },
+            { "name": "핵심 주장(총 3개의 주장)", "score": -2, "deductions": [{ "keyword": "주장 개수 오류", "points": -2 }], "answer": "1. 탄소 배출이 적다\n2. 발전 단가가 낮다" },
+            { "name": "주장에 대한 이유", "score": 0, "deductions": [], "answer": "> 원전은 1kWh당 탄소 배출이 석탄의 1/80 수준이다." },
+            { "name": "출처", "score": -2, "deductions": [{ "keyword": "출처 누락", "points": -2 }], "comment": "주장2 출처 없음", "answer": "한국수력원자력(2023) 통계" }
           ],
-          "total": 92
+          "total": 96
         },
         {
-          "pages": [3, 4], "studentId": "20301", "name": "김토론", "status": "unreadable",
-          "scores": [], "comment": "글씨를 알아볼 수 없음"
+          "pages": [3, 4], "studentId": "10101", "name": "김토론", "status": "unreadable",
+          "scores": [], "comment": "뒷면 글씨가 번져 판독 불가"
+        },
+        {
+          "pages": [5, 6], "studentId": "10103", "name": "박근거", "status": "blank",
+          "scores": [], "comment": "백지"
         }
       ]
     }

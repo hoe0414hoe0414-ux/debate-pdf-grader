@@ -1,8 +1,9 @@
-import { parseCriteria, criteriaSignature, computeTotal, defaultRubric, EXAMPLE_CRITERIA } from './criteria.js?v=9';
-import { gradeFile, loadPdfjs, GradeError, extractStudentId, extractName, buildGradingPrompt } from './grader.js?v=9';
-import * as bridge from './bridge.js?v=9';
+import { parseCriteria, criteriaSignature, computeTotal, defaultRubric, shortReason, EXAMPLE_CRITERIA } from './criteria.js?v=10';
+import { gradeFile, loadPdfjs, openPdf, GradeError, extractStudentId, extractName, buildGradingPrompt } from './grader.js?v=10';
+import * as bridge from './bridge.js?v=10';
 
-const LAYOUTS = { auto: '자동', duplex: '양면', simplex: '단면' };
+const LAYOUTS = { auto: '자동', duplex: '양면', simplex: '단면', set: '여러 쪽' };
+const layoutLabel = (r) => (r?.layout === 'set' && r.per ? `${r.per}쪽씩` : LAYOUTS[r?.layout] || '');
 const $ = (s) => document.querySelector(s);
 const fmtNum = (n) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -35,6 +36,7 @@ function makeSection(name, from = {}) {
     savedAt: from.savedAt || null,
     notes: typeof from.notes === 'string' ? from.notes : '',
     layoutDefault: ['auto', 'duplex', 'simplex'].includes(from.layoutDefault) ? from.layoutDefault : 'auto',
+    keywords: typeof from.keywords === 'string' ? from.keywords.slice(0, 200) : '', // 파일 이름에 이 말이 있으면 이 영역으로 (예: 1차시, 입론)
   };
 }
 // 채점 기준 글에서 결과표 항목과 채점 방식(배점식/감점식, 만점, 최저점, 백지 점수)을 만든다
@@ -73,6 +75,7 @@ const state = {
   activeSec: loaded.sections.some((s) => s.id === loaded.activeSec) ? loaded.activeSec : loaded.sections[0].id, // 설정·업로드 화면에서 고른 영역
   files: new Map(),   // id -> 파일 항목
   order: [],          // 정렬된 id 목록 (영역 순서 → 파일 이름 순)
+  showWhy: true,      // 학급 표에서 채점 근거·답안 펼침
   result: { kind: 'all' }, // 결과 화면에서 보는 것: {kind:'all'} | {kind:'sec', sec} | {kind:'file', sec, file}
   view: 'settings',
 };
@@ -90,7 +93,7 @@ function persist() {
   return store.set(KEY, {
     idDigits: state.idDigits,
     activeSec: state.activeSec,
-    sections: state.sections.map(({ id, name, criteriaText, criteria, savedAt, notes, layoutDefault }) => ({ id, name, criteriaText, criteria: criteria.map(({ name: n, points }) => ({ name: n, points })), savedAt, notes, layoutDefault })),
+    sections: state.sections.map(({ id, name, criteriaText, criteria, savedAt, notes, layoutDefault, keywords }) => ({ id, name, criteriaText, criteria: criteria.map(({ name: n, points }) => ({ name: n, points })), savedAt, notes, layoutDefault, keywords })),
   });
 }
 const secSig = (s) => `${state.idDigits}\u0003${s.criteriaText}\u0003${criteriaSignature(s.criteria)}\u0003${JSON.stringify(s.rubric)}\u0003${s.notes}`;
@@ -154,6 +157,7 @@ window.addEventListener('hashchange', route);
 const ta = $('#criteria');
 const notes = $('#reading-notes');
 const nameInput = $('#sec-name');
+const kwInput = $('#sec-keywords');
 const draftAt = new Map(); // 영역별 임시 저장 시각 (-1: 브라우저가 저장을 막음)
 let vTimer = 0, nTimer = 0, nameTimer = 0;
 let formSec = null; // 지금 입력 칸에 올라와 있는 영역 id
@@ -178,7 +182,14 @@ function flushPendingInputs() {
   if (!sec) return;
   persistDraft();
   if (notes.value !== sec.notes) { sec.notes = notes.value; persist(); markStale(); }
+  commitKeywords();
   commitName();
+}
+function commitKeywords() {
+  const sec = secById(formSec);
+  if (!sec) return;
+  const v = kwInput.value.slice(0, 200);
+  if (v !== (sec.keywords || '')) { sec.keywords = v; persist(); invalidate('files'); }
 }
 function commitName() {
   const sec = secById(formSec);
@@ -197,6 +208,7 @@ function loadSectionIntoForm() {
   if (typeof draft === 'string' && draft !== sec.criteriaText && !draftAt.has(sec.id)) draftAt.set(sec.id, Date.now());
   notes.value = sec.notes;
   nameInput.value = sec.name;
+  kwInput.value = sec.keywords || '';
   document.querySelectorAll('input[name="layoutDefault"]').forEach((r) => { r.checked = r.value === sec.layoutDefault; });
   $('#sec-delete').hidden = state.sections.length <= 1;
   resetDeleteArm();
@@ -291,6 +303,8 @@ function initSettings() {
   nameInput.addEventListener('blur', () => { clearTimeout(nameTimer); commitName(); if (!nameInput.value.trim()) nameInput.value = activeSection().name; });
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(nameTimer); commitName(); ta.focus(); } });
   $('#sec-delete').addEventListener('click', deleteSection);
+  kwInput.addEventListener('input', () => { clearTimeout(nameTimer); nameTimer = setTimeout(() => { commitKeywords(); commitName(); }, 400); });
+  kwInput.addEventListener('blur', commitKeywords);
 
   // 작성 중인 내용은 자동으로 임시 저장 (새로고침·창 닫기에도 유지)
   ta.addEventListener('input', () => {
@@ -381,31 +395,80 @@ function saveCriteria() {
 function markStale() { invalidate('files', 'results'); }
 
 // ── 파일 업로드 ───────────────────────────────────────────────────────────
-function addFiles(list, secId = state.activeSec) {
+// 파일 이름으로 영역 찾기: 영역의 ‘파일 이름 키워드’(예: 1차시) 또는 영역 이름이 파일 이름에 들어 있으면 그 영역.
+// 여러 영역이 걸리면 더 길게(구체적으로) 맞은 쪽, 그래도 같으면 판단하지 않는다(→ 지금 고른 영역).
+const squash = (x) => String(x || '').replace(/\s+/g, '').toLowerCase();
+const keywordsOf = (sec) => String(sec.keywords || '').split(/[,，\n]/).map((k) => k.trim()).filter(Boolean);
+export function matchSection(fileName, sections = state.sections) {
+  const fn = squash(fileName.replace(/\.pdf$/i, ''));
+  let best = null, bestLen = 0, tie = false;
+  for (const sec of sections) {
+    let len = 0;
+    for (const k of [...keywordsOf(sec), sec.name]) {
+      const q = squash(k);
+      if (q.length < 2 && !/\d/.test(q)) continue;
+      // ‘1차시’가 ‘11차시’ 안에서 맞지 않도록 숫자로 시작하는 키워드는 앞이 숫자가 아니어야 함
+      const i = fn.indexOf(q);
+      if (i < 0 || (/^\d/.test(q) && i > 0 && /\d/.test(fn[i - 1]))) continue;
+      len = Math.max(len, q.length);
+    }
+    if (!len) continue;
+    if (len > bestLen) { best = sec; bestLen = len; tie = false; } else if (len === bestLen) tie = true;
+  }
+  if (best && !tie) return best;
+  // 키워드를 아무 영역에도 적지 않았다면: 파일 이름의 ‘N차시’ → N번째 영역 (영역 탭 순서 = 차시 순서)
+  const m = fn.match(/(?<!\d)(\d{1,2})차시/);
+  if (m && !sections.some((x) => keywordsOf(x).length) && +m[1] >= 1 && +m[1] <= sections.length) return sections[+m[1] - 1];
+  return null;
+}
+function addFiles(list, secId = null) {
   const incoming = [...list];
-  let added = 0, dup = 0, skipped = 0, big = 0;
-  const keys = new Set([...state.files.values()].filter((f) => f.sec === secId).map((f) => `${f.name}\u0000${f.size}`));
+  let dup = 0, skipped = 0, big = 0;
+  const addedTo = new Map(); // 영역 id → 개수
+  const keysOf = (sid) => new Set([...state.files.values()].filter((f) => f.sec === sid).map((f) => `${f.name}\u0000${f.size}`));
+  const keys = new Map();
   for (const file of incoming) {
     const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
     if (!isPdf) { skipped++; continue; }
     if (file.size > MAX_FILE_MB * 1024 * 1024) { big++; continue; }
+    const target = secId || matchSection(file.name)?.id || state.activeSec;
+    if (!keys.has(target)) keys.set(target, keysOf(target));
     const k = `${file.name}\u0000${file.size}`;
-    if (keys.has(k)) { dup++; continue; }
-    keys.add(k);
+    if (keys.get(target).has(k)) { dup++; continue; }
+    keys.get(target).add(k);
     const id = `f${++seq}`;
-    state.files.set(id, { id, sec: secId, file, name: file.name, size: file.size, status: 'pending', result: null, error: '', sig: null, layout: null });
-    added++;
+    state.files.set(id, { id, sec: target, file, name: file.name, size: file.size, status: 'pending', result: null, error: '', sig: null, layout: null });
+    addedTo.set(target, (addedTo.get(target) || 0) + 1);
     queue.push(id);
   }
+  const added = [...addedTo.values()].reduce((a, b) => a + b, 0);
   if (added) sortFiles();
   const msg = [];
-  if (added) msg.push(`‘${secName(secById(secId))}’에 ${added}개 추가`);
+  if (added) msg.push([...addedTo].map(([sid, n]) => `‘${secName(secById(sid))}’에 ${n}개`).join(', ') + ' 추가');
   if (dup) msg.push(`중복 ${dup}개 제외`);
   if (skipped) msg.push(`PDF가 아닌 파일 ${skipped}개 제외`);
   if (big) msg.push(`${MAX_FILE_MB}MB 초과 ${big}개 제외`);
   if (msg.length) toast(msg.join(' · '));
-  invalidate('files', 'results', 'badges');
+  // 올린 파일이 지금 보고 있는 영역에 하나도 없으면, 들어간 영역 탭을 보여 준다
+  if (added && !addedTo.has(state.activeSec)) { state.activeSec = [...addedTo.keys()][0]; formSec = null; persist(); }
+  invalidate('files', 'results', 'badges', 'sectabs');
   if (added) { loadPdfjs().catch(() => {}); pump(); }
+}
+// 파일을 다른 영역으로 옮긴다 (영역마다 채점 기준이 다르므로 점수는 새로 매김)
+function moveFile(id, secId) {
+  const f = state.files.get(id);
+  const sec = secById(secId);
+  if (!f || !sec || f.sec === secId) return;
+  if ([...state.files.values()].some((x) => x.sec === secId && x.name === f.name && x.size === f.size)) { toast(`‘${secName(sec)}’에 같은 파일이 이미 있어요.`); renderFiles(); return; }
+  const from = secName(secById(f.sec));
+  f.sec = secId;
+  f.edits = null;
+  if (state.result.file === id) state.result = { kind: 'file', sec: secId, file: id };
+  sortFiles();
+  if (f.file) regradeOne(f);
+  else { f.status = 'pending'; f.result = null; invalidate('files', 'results', 'badges'); }
+  invalidate('sectabs');
+  toast(`‘${f.name}’ 파일을 ‘${from}’에서 ‘${secName(sec)}’(으)로 옮겼어요.`);
 }
 function sortFiles() {
   listVersion++;
@@ -453,7 +516,7 @@ async function run(f) {
   try {
     const res = await gradeFile(f.file, opts, ctrl.signal);
     if (state.files.get(f.id) !== f || f.abort !== ctrl) return; // 도중에 삭제되었거나 다시 채점 시작됨
-    const ok = res.students.filter((st) => st.status === 'success').length;
+    const ok = res.students.filter((st) => st.status === 'success' || st.status === 'wait').length;
     f.result = res; f.sig = sig;
     f.status = ok ? 'success' : 'fail';
     f.error = ok ? '' : (res.students[0]?.reason || '판독 불가');
@@ -515,11 +578,12 @@ function statusText(f) {
   switch (f.status) {
     case 'success': {
       const st = f.result.students;
-      const bad = st.filter((x) => x.status !== 'success').length;
+      const bad = st.filter((x) => x.status === 'fail').length;
+      if (!isClaude(f) && st.every((x) => x.status === 'wait')) return `학생 ${st.length}명으로 나눔 · Claude 채점 필요`;
       return `${isClaude(f) ? 'Claude 채점 완료' : '데모 채점'} · 학생 ${st.length}명${bad ? ` (채점 불가 ${bad}명)` : ''} · 결과 보기`;
     }
     case 'fail': return `${isClaude(f) ? 'Claude: ' : ''}채점 실패 · ${f.error || '판독 불가'}`;
-    case 'grading': return '데모 채점 중…';
+    case 'grading': return '읽는 중…';
     default: return !f.file ? '결과만 있음' : canGradeFile(f) ? '대기 중' : '기준 저장 후 채점';
   }
 }
@@ -536,22 +600,26 @@ function counts(secId = null) {
 // 양면/단면 선택 버튼 (한 번 클릭으로 전환)
 function layoutSeg(f) {
   const cur = layoutChoice(f);
-  const detected = f.result?.layoutAuto ? f.result.layout : null;
+  const detected = f.result?.layoutAuto && !isClaude(f) ? f.result.layout : null;
   const btn = (v) => {
-    const label = v === 'auto' && detected ? `자동(${LAYOUTS[detected]})` : LAYOUTS[v];
-    const tip = v === 'auto' ? (f.result?.layoutReason ? `자동 판단: ${f.result.layoutReason}` : '파일을 보고 양면/단면을 자동으로 판단') : v === 'duplex' ? '양면: 2쪽(앞+뒤)을 학생 1명으로 채점' : '단면: 1쪽을 학생 1명으로 채점';
+    const label = v === 'auto' && detected ? `자동(${layoutLabel(f.result)})` : LAYOUTS[v];
+    const tip = v === 'auto' ? (f.result?.layoutReason ? `자동 판단: ${f.result.layoutReason}` : '답안지 양식이 몇 쪽마다 반복되는지 보고 학생을 자동으로 나눔') : v === 'duplex' ? '양면: 2쪽(앞+뒤)을 학생 1명으로 채점' : '단면: 1쪽을 학생 1명으로 채점';
     return `<button type="button" data-layout="${v}" aria-pressed="${cur === v}" title="${esc(tip)}">${esc(label)}</button>`;
   };
   return `<span class="seg" role="group" aria-label="양면/단면" data-seg="${f.id}">${btn('auto')}${btn('duplex')}${btn('simplex')}</span>`;
 }
-function rowKey(f) { return `${f.status}|${f.result?.source || ''}|${statusText(f)}|${layoutChoice(f)}|${f.result?.layout || ''}`; }
+function rowKey(f) { return `${f.status}|${f.result?.source || ''}|${statusText(f)}|${layoutChoice(f)}|${f.result?.layout || ''}|${f.result?.per || ''}|${state.sections.map((x) => secName(x)).join(',')}`; }
 
 function renderFiles() {
   const sec = activeSection();
   const tabsHtml = secTabsHtml(sec.id, false) + '<a class="sec-tab add" href="#settings" title="설정에서 평가 영역 추가">+ 영역 추가</a>';
   const tabsEl = $('#files-sec-tabs');
   if (tabsEl.dataset.h !== tabsHtml) { tabsEl.innerHTML = tabsHtml; tabsEl.dataset.h = tabsHtml; }
-  $('#dz-title').textContent = `‘${secName(sec)}’ PDF를 여기로 끌어다 놓으세요`;
+  $('#dz-title').textContent = state.sections.length > 1 ? 'PDF를 여기로 끌어다 놓으세요' : `‘${secName(sec)}’ PDF를 여기로 끌어다 놓으세요`;
+  const kwHint = state.sections.filter((x) => keywordsOf(x).length);
+  $('#dz-sub').innerHTML = state.sections.length > 1
+    ? (kwHint.length ? `파일 이름으로 영역을 자동으로 나눠요: ${state.sections.map((x) => `<b>${esc(secName(x))}</b>${keywordsOf(x).length ? `(${esc(keywordsOf(x).join(', '))})` : ''}`).join(' · ')} · 못 찾으면 ‘${esc(secName(sec))}’에 넣어요` : `파일 이름으로 영역을 자동으로 나눠요: ${state.sections.map((x, i) => `<b>${i + 1}차시</b>→${esc(secName(x))}`).join(' · ')} · 다르면 설정의 ‘파일 이름 키워드’로 지정하거나 목록에서 영역을 바꿔 주세요`)
+    : '또는 클릭해서 선택 · 여러 파일 가능 · 파일은 이 컴퓨터 밖으로 전송되지 않아요';
 
   const c = counts(sec.id);
   $('#files-summary').textContent = c.n ? `‘${secName(sec)}’ 파일 ${c.n}개 · 학생 ${c.students}명 · 성공 ${c.s} · 실패 ${c.x}${c.p ? ` · 대기/진행 ${c.p}` : ''}` : `‘${secName(sec)}’에 아직 올린 파일이 없어요.`;
@@ -571,8 +639,9 @@ function renderFiles() {
   const rowHtml = (f) => {
     const link = f.status === 'success' || f.status === 'fail';
     const pages = f.result?.pages ? `${f.result.pages}쪽` : f.file ? fmtSize(f.size) : '–';
+    const move = state.sections.length > 1 ? `<select class="sec-move" data-move="${f.id}" aria-label="${esc(f.name)} 평가 영역" title="다른 평가 영역으로 옮기기">${state.sections.map((s2) => `<option value="${s2.id}"${s2.id === f.sec ? ' selected' : ''}>${esc(secName(s2))}</option>`).join('')}</select>` : '';
     return `<span class="dot"></span>
-      <span class="name" title="${esc(f.name)}">${esc(f.name)}</span>
+      <span class="name" title="${esc(f.name)}">${esc(f.name)}</span>${move}
       ${f.file ? layoutSeg(f) : '<span class="seg seg-off" title="결과 파일에서 불러옴">불러온 결과</span>'}
       <span class="size">${pages}</span>
       ${link ? `<button type="button" class="status" data-link="${f.id}">${esc(statusText(f))}</button>` : `<span class="status">${esc(statusText(f))}</span>`}
@@ -606,7 +675,8 @@ function renderBadges() {
 const fmt = (n) => (n == null ? '' : Number.isInteger(n) ? String(n) : n.toFixed(1));
 const BAD = '(채점 불가)';
 const scoreOf = (st, crit) => { const hit = st.scores?.find((x) => x.name === crit.name); return hit ? hit.score : undefined; };
-const studentLabel = (f, st) => st.name || (f.result.students.length > 1 ? `학생 ${st.idx}` : '');
+const scoreObj = (st, crit) => st.scores?.find((x) => x.name === crit.name);
+const studentLabel = (f, st) => st.name || '';
 
 // ── 직접 수정한 값 (파일마다 학생 번호별로 보관, 다시 채점해도 유지) ──
 const editOf = (f, st) => f.edits?.[st.idx];
@@ -623,9 +693,11 @@ function totalEff(f, st, sec) {
   const vals = sec.criteria.map((c) => { const v = valOf(f, st, c); return v == null ? null : v; });
   return computeTotal(rubricOf(sec), vals);
 }
-const isBad = (f, st) => st.status !== 'success' && !hasEdit(editOf(f, st));
-const critHead = (sec, c) => (rubricOf(sec).mode === 'deduct' ? `${esc(c.name)} (감점)` : `${esc(c.name)} (${fmt(c.points)})`);
-const totalHead = (sec) => { const r = rubricOf(sec); return `총점 (${fmt(r.max)}${r.mode === 'deduct' ? '점 만점' : ''}${r.floor != null ? `, 최저 ${fmt(r.floor)}` : ''})`; };
+const isBad = (f, st) => st.status === 'fail' && !hasEdit(editOf(f, st));
+const isWait = (f, st) => st.status === 'wait' && !hasEdit(editOf(f, st)); // 스캔본: Claude 채점 전
+// 표 머리글은 짧게 두 줄로 (항목 이름 + 작은 글씨로 배점/감점) → 점수 칸이 좁아져 표가 한 화면에 들어옴
+const critHead = (sec, c) => `<span class="th-name">${esc(c.name)}</span><small>${rubricOf(sec).mode === 'deduct' ? '감점' : `${fmt(c.points)}점`}</small>`;
+const totalHead = (sec) => { const r = rubricOf(sec); return `<span class="th-name">총점</span><small>${fmt(r.max)}점${r.mode === 'deduct' ? ' 만점' : ''}${r.floor != null ? ` · 최저 ${fmt(r.floor)}` : ''}</small>`; };
 const fmtScore = (sec, v) => (v == null ? '' : rubricOf(sec).mode === 'deduct' && v < 0 ? `−${fmt(-v)}` : fmt(v));
 // 학번 순 정렬 (학번이 없으면 맨 뒤, 같으면 학급·순서대로)
 function byStudentId(a, b) {
@@ -635,6 +707,38 @@ function byStudentId(a, b) {
 }
 const studentsOf = (ids) => ids.flatMap((id) => { const f = state.files.get(id); return f.result ? f.result.students.map((st) => ({ f, st })) : []; }).sort(byStudentId);
 const fileTitle = (f) => f.name.replace(/\.pdf$/i, '');
+
+// ── 아주 작은 마크다운 → HTML (학생 답안·채점 근거 표시용, 글자는 모두 이스케이프) ──
+function mdInline(t) {
+  return esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/(^|[^*])\*(?!\s)(.+?)\*(?!\*)/g, '$1<i>$2</i>').replace(/`([^`]+)`/g, '<code>$1</code>');
+}
+export function mdToHtml(src) {
+  const lines = String(src || '').replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let list = null, quote = [], para = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${para.map(mdInline).join('<br>')}</p>`); para = []; } };
+  const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map((x) => `<li>${mdInline(x)}</li>`).join('')}</${list.tag}>`); list = null; } };
+  const flushQuote = () => { if (quote.length) { out.push(`<blockquote>${mdToHtml(quote.join('\n'))}</blockquote>`); quote = []; } };
+  const flushAll = () => { flushPara(); flushList(); flushQuote(); };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    let m;
+    if ((m = line.match(/^\s*>\s?(.*)$/))) { flushPara(); flushList(); quote.push(m[1]); continue; }
+    flushQuote();
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    if ((m = line.match(/^\s*#{1,6}\s+(.*)$/))) { flushAll(); out.push(`<h5>${mdInline(m[1])}</h5>`); continue; }
+    if ((m = line.match(/^\s*(?:[-*•·]|(\d+)[.)])\s+(.*)$/))) {
+      flushPara();
+      const tag = m[1] ? 'ol' : 'ul';
+      if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+      list.items.push(m[2]); continue;
+    }
+    if (list && /^\s{2,}\S/.test(raw)) { list.items[list.items.length - 1] += ` ${line.trim()}`; continue; }
+    flushList(); para.push(line.trim());
+  }
+  flushAll();
+  return out.join('');
+}
 
 function validResult() {
   const r = state.result;
@@ -694,21 +798,28 @@ const edCell = (f, st, field, html, cls, orig) => {
 };
 function scoreCells(f, st, sec) {
   const crit = sec.criteria;
-  const bad = isBad(f, st);
-  const cells = crit.map((c, i) => {
+  const bad = isBad(f, st), wait = isWait(f, st);
+  const cells = crit.map((c) => {
     const v = valOf(f, st, c);
-    const orig = st.status === 'success' ? fmtScore(sec, scoreOf(st, c)) : BAD;
-    if (v == null) return edCell(f, st, `s:${c.name}`, bad || st.status !== 'success' ? BAD : '–', `num ${bad || st.status !== 'success' ? 'bad' : 'pending'}`, orig);
+    const orig = st.status === 'success' ? fmtScore(sec, scoreOf(st, c)) : st.status === 'wait' ? '채점 전' : BAD;
+    if (v == null) return edCell(f, st, `s:${c.name}`, bad ? BAD : '–', `num ${bad ? 'bad' : 'pending'}`, orig);
     return edCell(f, st, `s:${c.name}`, fmtScore(sec, v), 'num', orig);
   }).join('');
   const t = totalEff(f, st, sec);
-  const origT = st.status === 'success' ? fmt(st.total) : BAD;
-  const tag = (st.mode === 'scan-demo' && !hasEdit(editOf(f, st)) ? '<span class="demo-tag">데모</span>' : '') + (st.blank ? '<span class="demo-tag">백지</span>' : '');
-  return cells + (t == null ? edCell(f, st, 'total', BAD, 'num total bad', origT) : edCell(f, st, 'total', `${fmt(t)}${tag}`, 'num total', origT));
+  const origT = st.status === 'success' ? fmt(st.total) : st.status === 'wait' ? '채점 전' : BAD;
+  const tag = st.blank ? '<span class="demo-tag">백지</span>' : st.mode === 'text' && !hasEdit(editOf(f, st)) ? '<span class="demo-tag" title="글자 PDF를 키워드로 매긴 임시 점수">데모</span>' : '';
+  if (t == null) return cells + edCell(f, st, 'total', wait ? '<span class="wait-tag">채점 전</span>' : BAD, `num total ${wait ? 'pending' : 'bad'}`, origT);
+  return cells + edCell(f, st, 'total', `${fmt(t)}${tag}`, 'num total', origT);
 }
-const idCells = (f, st) => edCell(f, st, 'id', esc(idOf(f, st) || '–'), '', st.studentId || '없음') + edCell(f, st, 'name', esc(nameOf(f, st) || '–'), '', st.name || '없음');
+const UNREAD = '<span class="unread" title="손글씨 스캔본은 Claude 채점 후 학번·이름이 채워져요. 눌러서 직접 적을 수도 있어요">판독 전</span>';
+const idCells = (f, st) => {
+  const scan = st.mode === 'scan' || st.mode === 'claude';
+  return edCell(f, st, 'id', idOf(f, st) ? esc(idOf(f, st)) : scan ? UNREAD : '–', 'idc', st.studentId || '없음')
+    + edCell(f, st, 'name', nameOf(f, st) ? esc(nameOf(f, st)) : scan ? UNREAD : '–', 'namec', st.name || '없음');
+};
+const viewBtn = (f, st) => (f.file ? `<td class="vcell"><button type="button" class="btn tiny" data-view-st="${f.id}|${st.idx}" title="이 학생의 답안지와 채점 근거 보기">답안지</button></td>` : '<td class="vcell"></td>');
 
-const FOOT = `<p class="muted" style="margin:0">※ 빨간색 ${BAD}는 AI가 학생이 쓴 글을 해석하지 못한 경우예요. 원본 PDF를 직접 확인해 주세요. ‘데모’ 표시는 스캔본에 임시 점수를 보여 준 것입니다. 점수·학번·이름 칸을 누르면 직접 고칠 수 있어요(고친 칸은 노란색). 학급 이름을 누르면 그 학급의 점수표가 열려요.</p>`;
+const FOOT = `<p class="muted foot">※ ‘판독 전’·‘채점 전’은 손글씨 스캔본이라 아직 Claude가 채점하지 않은 학생이에요. 업로드 화면의 ‘Claude 채점 시작’ 후 결과를 불러오면 학번·이름·점수가 채워져요. 빨간색 ${BAD}는 글씨를 판독하지 못한 경우예요. 점수·학번·이름 칸을 누르면 직접 고칠 수 있어요(고친 칸은 노란색). 학급 이름을 누르면 그 학급의 채점 근거와 답안이 함께 나와요.</p>`;
 
 // 한 영역의 모든 학생을 한 표로 (영역마다 채점 항목이 달라서 표를 영역별로 나눈다)
 function renderSectionTable(sec) {
@@ -718,15 +829,15 @@ function renderSectionTable(sec) {
   const title = `<div class="sec-title"><h2>${esc(secName(sec))}</h2><span class="muted">${ids.length ? `학급 ${ids.length}개 · 학생 ${c.students}명` : '올린 파일 없음'}</span></div>`;
   if (!ids.length) return `${title}<div class="empty">이 영역에 올린 파일이 없어요. <a href="#files" data-go-sec="${sec.id}">업로드 파일</a>에서 올려 주세요.</div>`;
   if (!crit.length) return `${title}<div class="empty">‘${esc(secName(sec))}’의 채점 기준이 아직 저장되지 않았어요. <a href="#settings" data-go-sec="${sec.id}">설정</a>에서 저장하면 바로 채점돼요.</div>`;
-  const head = `<tr><th>학번</th><th>이름</th><th>학급</th><th>쪽</th>${crit.map((x) => `<th class="num">${critHead(sec, x)}</th>`).join('')}<th class="num">${totalHead(sec)}</th></tr>`;
-  const rows = studentsOf(ids).map(({ f, st }) => `<tr>${idCells(f, st)}<td><button type="button" class="linkish" data-open-file="${f.id}">${esc(fileTitle(f))}</button></td><td>${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}</tr>`);
+  const head = `<tr><th>학번</th><th>이름</th><th>학급</th><th>쪽</th>${crit.map((x) => `<th class="num">${critHead(sec, x)}</th>`).join('')}<th class="num">${totalHead(sec)}</th><th class="vcell"></th></tr>`;
+  const rows = studentsOf(ids).map(({ f, st }) => `<tr>${idCells(f, st)}<td class="cls"><button type="button" class="linkish" data-open-file="${f.id}" title="${esc(fileTitle(f))}">${esc(fileTitle(f))}</button></td><td class="pg">${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}${viewBtn(f, st)}</tr>`);
   for (const id of ids) {
     const f = state.files.get(id);
     if (f.result) continue;
-    const label = f.status === 'grading' ? '채점 중…' : '대기 중';
-    rows.push(`<tr><td>–</td><td>–</td><td><button type="button" class="linkish" data-open-file="${id}">${esc(fileTitle(f))}</button></td><td>–</td>${crit.map(() => `<td class="num pending">${label}</td>`).join('')}<td class="num pending">${label}</td></tr>`);
+    const label = f.status === 'grading' ? '읽는 중…' : '대기 중';
+    rows.push(`<tr><td>–</td><td>–</td><td class="cls"><button type="button" class="linkish" data-open-file="${id}">${esc(fileTitle(f))}</button></td><td>–</td>${crit.map(() => `<td class="num pending">${label}</td>`).join('')}<td class="num pending">${label}</td><td class="vcell"></td></tr>`);
   }
-  return `${title}<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows.join('')}</tbody></table></div>`;
+  return `${title}<div class="table-wrap"><table class="grid"><thead>${head}</thead><tbody>${rows.join('')}</tbody></table></div>`;
 }
 
 function renderAllSections() {
@@ -735,32 +846,64 @@ function renderAllSections() {
   return `<div class="stack">${used.map((s) => `<section class="stack sec-block">${renderSectionTable(s)}</section>`).join('')}${FOOT}</div>`;
 }
 
+// 항목별 감점 키워드: v2 결과는 deductions[], 예전 결과는 comment, 데모는 감점 규칙에서 뽑은 키워드
+function reasonChips(sec, x) {
+  const rb = rubricOf(sec);
+  if (x.deductions?.length) return x.deductions.map((d) => `<span class="kw">${esc(d.keyword)}${d.points ? ` <b>${fmtScore(sec, -Math.abs(d.points))}</b>` : ''}</span>`).join('');
+  if (rb.mode === 'deduct' && x.score === 0) return '<span class="kw ok">감점 없음</span>';
+  if (!x.comment) return '';
+  const c = x.comment.length > 40 ? shortReason(x.comment, x.name) : x.comment; // 기준 문장을 통째로 옮긴 근거는 키워드로 줄임
+  return `<span class="kw">${esc(c)}</span>`;
+}
+// 학생 한 명의 채점 근거 + 학생 답안 (마크다운 형식으로 정리)
+function whyHtml(f, st, sec) {
+  if (isWait(f, st)) return `<div class="why-empty">아직 Claude가 채점하지 않았어요. ${f.file ? '‘답안지’ 버튼으로 원본을 볼 수 있어요.' : ''}</div>`;
+  if (st.status === 'fail') return `<div class="why-empty bad">${esc(st.reason || '판독 불가')}</div>`;
+  const rb = rubricOf(sec);
+  const items = sec.criteria.map((c) => {
+    const x = scoreObj(st, c) || { name: c.name, score: null };
+    const v = valOf(f, st, c);
+    const edited = editOf(f, st)?.scores && c.name in editOf(f, st).scores;
+    const sc = v == null ? '–' : rb.mode === 'deduct' ? (v === 0 ? '0' : fmtScore(sec, v)) : `${fmt(v)}/${fmt(c.points)}`;
+    const extra = x.deductions?.length && x.comment && x.comment.length <= 80 ? `<div class="wi-note">${mdInline(x.comment)}</div>` : '';
+    const ans = x.answer ? `<blockquote class="ans">${mdToHtml(x.answer)}</blockquote>` : '';
+    const ded = rb.mode === 'deduct' ? v != null && v < 0 : v != null && v < c.points;
+    return `<div class="why-item${ded ? ' ded' : ''}"><div class="wi-head"><b>${esc(c.name)}</b><span class="wi-score">${sc}${edited ? ' <small>(수정)</small>' : ''}</span></div><div class="kws">${reasonChips(sec, x)}</div>${extra}${ans}</div>`;
+  }).join('');
+  const hasItemAns = (st.scores || []).some((x) => x.answer);
+  const whole = !hasItemAns && st.answer ? `<details class="why-ans"${st.mode === 'claude' ? ' open' : ''}><summary>학생 답안 전체</summary><div class="md">${mdToHtml(st.answer)}</div></details>` : '';
+  const note = st.comment && st.mode === 'claude' ? `<div class="wi-note">총평: ${mdInline(st.comment)}</div>` : '';
+  return `<div class="why-grid">${items}</div>${note}${whole}`;
+}
+
 function renderDetail(f) {
   const sec = secById(f.sec);
   const r = f.result;
   const crit = sec.criteria;
   const stat = (k, v, cls = '') => `<div class="stat"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
-  const title = `<div class="sec-title"><h2>${esc(secName(sec))} · ${esc(fileTitle(f))}</h2></div>`;
+  const title = `<div class="sec-title"><h2>${esc(secName(sec))} · ${esc(fileTitle(f))}</h2>${f.file ? `<button type="button" class="btn small" data-view-st="${f.id}|">답안지 보기</button>` : ''}</div>`;
   if (f.status !== 'success' && f.status !== 'fail') {
-    return `<div class="stack">${title}<div class="empty">${f.status === 'grading' ? '채점 중이에요…' : canGradeFile(f) ? '아직 채점하지 않았어요.' : '이 영역의 채점 기준을 저장하면 채점돼요.'}</div></div>`;
+    return `<div class="stack">${title}<div class="empty">${f.status === 'grading' ? 'PDF를 읽는 중이에요…' : canGradeFile(f) ? '아직 읽지 않았어요.' : '이 영역의 채점 기준을 저장하면 읽기 시작해요.'}</div></div>`;
   }
   const reason = f.status === 'fail' ? `<div class="notice warn">채점 실패: ${esc(f.error || '판독 불가')}</div>` : '';
-  const layoutTxt = r.layout ? `${LAYOUTS[r.layout]}${r.layoutAuto ? ' (자동 판단)' : ' (직접 지정)'}` : '–';
+  const layoutTxt = r.layout ? `${r.layout === 'set' ? `${r.per}쪽 = 1명` : LAYOUTS[r.layout]}${r.layoutAuto ? ' (자동)' : isClaude(f) ? ' (Claude)' : ' (직접 지정)'}` : '–';
   const sts = r.students;
-
-  // 학급(파일 1개)의 학생별 점수표
-  const ok = sts.filter((x) => !isBad(f, x)).length;
+  const done = sts.filter((x) => !isBad(f, x) && !isWait(f, x)).length;
+  const bad = sts.filter((x) => isBad(f, x)).length;
+  const wait = sts.filter((x) => isWait(f, x)).length;
   const top = `<div class="detail-grid">
     ${stat('학생 수', `${sts.length}명`)}
-    ${stat('채점 완료', `${ok}명`, 'good')}
-    ${stat('채점 불가', `${sts.length - ok}명`, sts.length - ok ? 'bad' : '')}
+    ${wait ? stat('Claude 채점 전', `${wait}명`, 'muted') : stat('채점 완료', `${done}명`, 'good')}
+    ${stat('채점 불가', `${bad}명`, bad ? 'bad' : '')}
     ${stat('나눈 방식', `<span style="font-size:15px">${r.pages ? `${layoutTxt} · ${r.pages}쪽` : '–'}</span>`)}
   </div>`;
-  const head = `<tr><th>학번</th><th>이름</th><th>쪽</th>${crit.map((c) => `<th class="num">${critHead(sec, c)}</th>`).join('')}<th class="num">${totalHead(sec)}</th><th>채점 근거</th></tr>`;
-  const why = (st) => (st.scores || []).filter((x) => x.comment && x.score != null && !(rubricOf(sec).mode === 'deduct' && x.score === 0)).map((x) => `${x.name}: ${x.comment}`).join(' · ');
-  const rows = studentsOf([f.id]).map(({ st }) => `<tr>${idCells(f, st)}<td>${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}<td class="wrap why">${esc(st.status === 'success' ? why(st) : st.reason || '')}</td></tr>`).join('');
-  const hint = r.layoutAuto ? `<p class="muted" style="margin:0">학생 나누기가 틀렸다면 <a href="#files" data-go-sec="${sec.id}">업로드 파일</a>에서 이 파일의 ‘양면/단면’ 버튼을 눌러 바꿔 주세요. 판단 근거: ${esc(r.layoutReason)}</p>` : '';
-  return `<div class="stack">${title}${reason}${top}<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>${hint}</div>`;
+  const cols = 5 + crit.length;
+  const head = `<tr><th>학번</th><th>이름</th><th>쪽</th>${crit.map((c) => `<th class="num">${critHead(sec, c)}</th>`).join('')}<th class="num">${totalHead(sec)}</th><th class="vcell"></th></tr>`;
+  const rows = studentsOf([f.id]).map(({ st }) => `<tr class="st-row">${idCells(f, st)}<td class="pg">${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}${viewBtn(f, st)}</tr>`
+    + (state.showWhy ? `<tr class="why-row"><td colspan="${cols}">${whyHtml(f, st, sec)}</td></tr>` : '')).join('');
+  const hint = r.layoutAuto ? `<p class="muted foot">학생 나누기가 틀렸다면 <a href="#files" data-go-sec="${sec.id}">업로드 파일</a>에서 이 파일의 ‘양면/단면’ 버튼을 눌러 바꿔 주세요. 판단 근거: ${esc(r.layoutReason)}</p>` : '';
+  const toggle = `<div class="why-toggle"><button type="button" class="btn small ghost" data-act="toggle-why">${state.showWhy ? '채점 근거·답안 접기' : '채점 근거·답안 펼치기'}</button></div>`;
+  return `<div class="stack">${title}${reason}${top}${toggle}<div class="table-wrap detail"><table class="grid"><thead>${head}</thead><tbody>${rows}</tbody></table></div>${hint}</div>`;
 }
 
 // ── 결과 영역 드롭다운 (영역 이름을 누르면 학급 고르기) ─────────────────
@@ -822,7 +965,7 @@ function setResult(r) {
 
 // ── 결과표 칸 직접 수정 ──────────────────────────────────────────────────
 let editing = null; // 수정 중인 칸이 있으면 표를 다시 그리지 않는다
-function startEdit(td) {
+function startEdit(td, after = null) {
   const [fid, idxStr, field] = td.dataset.ed.split('|');
   const f = state.files.get(fid);
   const st = f?.result?.students.find((x) => x.idx === Number(idxStr));
@@ -849,6 +992,7 @@ function startEdit(td) {
     editing = null;
     if (save) commitEdit(f, st, sec, field, input.value);
     renderResults();
+    after?.();
   };
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); finish(true); }
@@ -884,6 +1028,158 @@ function commitEdit(f, st, sec, field, raw) {
   if (!hasEdit(e)) delete f.edits[st.idx];
 }
 
+// ── 학생 답안지 보기 (왼쪽: 답안지 원본, 오른쪽: 채점 근거 · 50:50) ────────────────
+const vw = { fid: null, idx: null, doc: null, docFid: null, token: 0, zoom: 1, lastFocus: null };
+const viewerEl = $('#viewer');
+const viewable = () => state.order.map((id) => state.files.get(id)).filter((f) => f.file && f.result?.students?.length);
+function openViewer(fid = null, idx = null) {
+  const list = viewable();
+  if (!list.length) {
+    toast(state.files.size ? '답안지를 보려면 원본 PDF가 필요해요. 업로드 파일에 그 학급 PDF를 올려 주세요.' : '먼저 업로드 파일에서 PDF를 올려 주세요.');
+    return;
+  }
+  const sel = state.result;
+  let f = (fid && state.files.get(fid)) || (sel.kind === 'file' && state.files.get(sel.file)) || null;
+  if (!f || !list.includes(f)) f = list.find((x) => sel.kind === 'sec' && x.sec === sel.sec) || list[0];
+  vw.fid = f.id;
+  const order = studentsOf([f.id]);
+  vw.idx = idx != null && order.some((o) => o.st.idx === idx) ? idx : order[0].st.idx;
+  vw.lastFocus = document.activeElement;
+  viewerEl.hidden = false;
+  document.body.classList.add('modal-open');
+  renderViewer();
+  $('#vw-close').focus();
+}
+function closeViewer() {
+  if (viewerEl.hidden) return;
+  viewerEl.hidden = true;
+  document.body.classList.remove('modal-open');
+  vw.token++;
+  if (vw.doc) { vw.doc.destroy(); vw.doc = null; vw.docFid = null; }
+  $('#vw-pages').innerHTML = '';
+  vw.lastFocus?.focus?.();
+}
+function viewerStudent() {
+  const f = state.files.get(vw.fid);
+  if (!f?.result) return null;
+  const order = studentsOf([f.id]);
+  const pos = order.findIndex((o) => o.st.idx === vw.idx);
+  return { f, order, pos, st: order[pos]?.st };
+}
+function moveViewer(step) {
+  const v = viewerStudent();
+  if (!v) return;
+  let pos = v.pos + step;
+  if (pos < 0 || pos >= v.order.length) {
+    // 학급의 처음/끝이면 이전/다음 학급으로
+    const list = viewable();
+    const fi = list.indexOf(v.f) + (step > 0 ? 1 : -1);
+    if (fi < 0 || fi >= list.length) { toast(step > 0 ? '마지막 학생이에요.' : '첫 학생이에요.'); return; }
+    vw.fid = list[fi].id;
+    const o = studentsOf([vw.fid]);
+    vw.idx = (step > 0 ? o[0] : o[o.length - 1]).st.idx;
+  } else vw.idx = v.order[pos].st.idx;
+  renderViewer();
+}
+const stLabel = (f, st) => `${idOf(f, st) || '학번 판독 전'} ${nameOf(f, st) || ''}`.trim() + ` · ${st.pageLabel || '쪽 정보 없음'}`;
+function renderViewer() {
+  const v = viewerStudent();
+  if (!v || !v.st) { closeViewer(); return; }
+  const { f, order, pos, st } = v;
+  const sec = secById(f.sec);
+  $('#vw-file').innerHTML = viewable().map((x) => `<option value="${x.id}"${x.id === f.id ? ' selected' : ''}>${esc(secName(secById(x.sec)))} · ${esc(fileTitle(x))}</option>`).join('');
+  $('#vw-student').innerHTML = order.map((o, i) => `<option value="${o.st.idx}"${o.st.idx === st.idx ? ' selected' : ''}>${i + 1}. ${esc(stLabel(f, o.st))}</option>`).join('');
+  $('#vw-pos').textContent = `${pos + 1} / ${order.length}명`;
+  renderViewerRight();
+  renderViewerPages(f, st);
+}
+function renderViewerRight() {
+  const v = viewerStudent();
+  if (!v?.st) return;
+  const { f, st } = v;
+  const sec = secById(f.sec);
+  const crit = sec.criteria;
+  const head = `<tr><th>학번</th><th>이름</th>${crit.map((c) => `<th class="num">${critHead(sec, c)}</th>`).join('')}<th class="num">${totalHead(sec)}</th></tr>`;
+  $('#vw-why').innerHTML = `
+    <div class="vw-title"><h3>${esc(idOf(f, st) || '')} ${esc(nameOf(f, st) || '')}${!idOf(f, st) && !nameOf(f, st) ? '<span class="unread">학번·이름 판독 전</span>' : ''}</h3><span class="muted">${esc(secName(sec))} · ${esc(fileTitle(f))} · ${esc(st.pageLabel || '')}</span></div>
+    <div class="table-wrap vw-table"><table class="grid"><thead>${head}</thead><tbody><tr>${idCells(f, st)}${scoreCells(f, st, sec)}</tr></tbody></table></div>
+    <p class="muted foot">칸을 누르면 바로 고칠 수 있어요 (Enter 저장).</p>
+    <div class="vw-reasons">${whyHtml(f, st, sec)}</div>`;
+}
+async function renderViewerPages(f, st) {
+  const box = $('#vw-pages');
+  const token = ++vw.token;
+  if (!st.pages?.length) { box.innerHTML = '<div class="why-empty">이 학생의 쪽 정보가 없어요. (결과 파일에 쪽 번호가 없음)</div>'; return; }
+  box.innerHTML = st.pages.map((p) => `<figure class="vw-page" data-p="${p}"><div class="vw-loading">${p}쪽 불러오는 중…</div><figcaption>${p}쪽</figcaption></figure>`).join('');
+  box.scrollTop = 0;
+  try {
+    if (vw.docFid !== f.id) {
+      if (vw.doc) { vw.doc.destroy(); vw.doc = null; }
+      vw.docFid = null;
+      const doc = await openPdf(f.file);
+      if (token !== vw.token) { doc.destroy(); return; } // 그사이 다른 학생·학급으로 넘어감
+      vw.doc = doc; vw.docFid = f.id;
+    }
+    const doc = vw.doc;
+    const width = Math.max(320, box.clientWidth - 24) * vw.zoom;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    for (const p of st.pages) {
+      if (token !== vw.token) return;
+      const fig = box.querySelector(`[data-p="${p}"]`);
+      if (!fig) continue;
+      if (p > doc.numPages) { fig.querySelector('.vw-loading').textContent = `${p}쪽이 PDF에 없어요`; continue; }
+      const page = await doc.getPage(p);
+      const vp1 = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: (width * dpr) / vp1.width });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+      canvas.style.width = `${Math.round(width)}px`;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      page.cleanup();
+      if (token !== vw.token) return;
+      fig.querySelector('.vw-loading')?.replaceWith(canvas);
+    }
+  } catch (e) {
+    console.error(e);
+    if (token === vw.token) box.innerHTML = '<div class="why-empty bad">답안지를 그리지 못했어요. PDF가 손상되었을 수 있어요.</div>';
+  }
+}
+function initViewer() {
+  $('#vw-close').addEventListener('click', closeViewer);
+  viewerEl.addEventListener('click', (e) => { if (e.target === viewerEl) closeViewer(); });
+  $('#vw-prev').addEventListener('click', () => moveViewer(-1));
+  $('#vw-next').addEventListener('click', () => moveViewer(1));
+  $('#vw-file').addEventListener('change', (e) => { vw.fid = e.target.value; vw.idx = studentsOf([vw.fid])[0]?.st.idx; renderViewer(); });
+  $('#vw-student').addEventListener('change', (e) => { vw.idx = Number(e.target.value); renderViewer(); });
+  const zoom = (z) => { vw.zoom = Math.min(2.5, Math.max(0.6, Math.round(z * 10) / 10)); $('#vw-zoom-v').textContent = `${Math.round(vw.zoom * 100)}%`; const v = viewerStudent(); if (v?.st) renderViewerPages(v.f, v.st); };
+  $('#vw-zoom-out').addEventListener('click', () => zoom(vw.zoom - 0.2));
+  $('#vw-zoom-in').addEventListener('click', () => zoom(vw.zoom + 0.2));
+  $('#vw-why').addEventListener('click', (e) => {
+    const td = e.target.closest('td[data-ed]');
+    if (td && !td.querySelector('input')) startEdit(td, () => { renderViewerRight(); const v = viewerStudent(); if (v) $('#vw-student').innerHTML = v.order.map((o, i) => `<option value="${o.st.idx}"${o.st.idx === vw.idx ? ' selected' : ''}>${i + 1}. ${esc(stLabel(v.f, o.st))}</option>`).join(''); });
+  });
+  document.addEventListener('keydown', (e) => {
+    if (viewerEl.hidden) return;
+    if (e.key === 'Escape' && !e.target.closest?.('.cell-input')) { e.preventDefault(); closeViewer(); return; }
+    if (e.target.closest?.('input, select, textarea')) return;
+    if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); moveViewer(1); }
+    if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); moveViewer(-1); }
+  });
+  // 창 안에서만 Tab 이동
+  viewerEl.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const items = [...viewerEl.querySelectorAll('button, select, input, [tabindex="0"]')].filter((x) => !x.disabled && x.offsetParent);
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+  let rt = 0;
+  window.addEventListener('resize', () => { if (viewerEl.hidden) return; clearTimeout(rt); rt = setTimeout(() => { const v = viewerStudent(); if (v?.st) renderViewerPages(v.f, v.st); }, 250); });
+}
+
 // ── CSV(엑셀) 내려받기: 지금 보고 있는 범위만 ─────────────────────────────
 function exportCsv() {
   const q = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
@@ -897,7 +1193,7 @@ function exportCsv() {
     const crit = sec.criteria;
     if (lines.length) lines.push([]);
     const rb = rubricOf(sec);
-    lines.push(['영역', '학번', '이름', '학급', '쪽', ...crit.map((c) => (rb.mode === 'deduct' ? `${c.name}(감점)` : `${c.name}(${c.points})`)), `총점(${rb.max})`, '상태']);
+    lines.push(['영역', '학번', '이름', '학급', '쪽', ...crit.map((c) => (rb.mode === 'deduct' ? `${c.name}(감점)` : `${c.name}(${c.points})`)), `총점(${rb.max})`, '상태', '감점 근거']);
     for (const { f, st } of studentsOf(ids)) {
       const bad = isBad(f, st);
       const t = totalEff(f, st, sec);
@@ -905,8 +1201,9 @@ function exportCsv() {
       lines.push([
         secName(sec), id ? `="${id}"` : '', nameOf(f, st), fileTitle(f), st.pageLabel,
         ...crit.map((c) => { const v = valOf(f, st, c); return v == null ? (bad ? BAD : '') : fmt(v); }),
-        t == null ? BAD : fmt(t),
-        hasEdit(editOf(f, st)) ? '직접 수정' : bad ? `실패: ${st.reason || f.error}` : st.mode === 'scan-demo' ? '성공(데모 점수)' : '성공',
+        t == null ? (isWait(f, st) ? '' : BAD) : fmt(t),
+        hasEdit(editOf(f, st)) ? '직접 수정' : bad ? `실패: ${st.reason || f.error}` : isWait(f, st) ? 'Claude 채점 전' : st.mode === 'text' ? '성공(데모 점수)' : '성공',
+        (st.scores || []).map((x) => { const k = x.deductions?.length ? x.deductions.map((d) => d.keyword).join(', ') : x.score ? x.comment : ''; return k ? `${x.name}: ${k}` : ''; }).filter(Boolean).join(' / '),
       ]);
     }
     for (const id of ids) { const f = state.files.get(id); if (!f.result) lines.push([secName(sec), '', '', fileTitle(f), '', ...crit.map(() => ''), '', '대기']); }
@@ -951,6 +1248,10 @@ function initEvents() {
     renderFiles();
   });
 
+  $('#file-list').addEventListener('change', (e) => {
+    const sel = e.target.closest('[data-move]');
+    if (sel) moveFile(sel.dataset.move, sel.value);
+  });
   $('#file-list').addEventListener('click', (e) => {
     const rm = e.target.closest('[data-remove]');
     if (rm) { removeFile(rm.dataset.remove); return; }
@@ -962,6 +1263,9 @@ function initEvents() {
 
   document.addEventListener('click', (e) => {
     if (e.target.closest('[data-act="regrade"]')) regradeAll();
+    if (e.target.closest('[data-act="toggle-why"]')) { state.showWhy = !state.showWhy; renderResults(); }
+    const vb = e.target.closest('[data-view-st]');
+    if (vb) { const [fid, idx] = vb.dataset.viewSt.split('|'); openViewer(fid, idx ? Number(idx) : null); }
     if (e.target.closest('[data-act="regrade-sec"]')) regradeAll(state.activeSec);
     const go = e.target.closest('[data-go-sec]');
     if (go && secById(go.dataset.goSec)) { state.activeSec = go.dataset.goSec; formSec = null; persist(); }
@@ -1017,6 +1321,7 @@ function initEvents() {
     if (op) { const f = state.files.get(op.dataset.openFile); if (f) setResult({ kind: 'file', sec: f.sec, file: f.id }); }
   });
   $('#export-csv').addEventListener('click', exportCsv);
+  $('#view-answers').addEventListener('click', () => openViewer());
   window.addEventListener('resize', () => { if (menuFor) placeMenu(); });
 
   window.addEventListener('beforeunload', (e) => {
@@ -1028,7 +1333,7 @@ function initEvents() {
 // ※ 설정 항목을 추가·변경하면 SETTINGS_FILE_VERSION을 올리고 toSettingsFile()/fromSettingsFile()을 함께 고칠 것.
 //   예전 버전 파일도 계속 불러올 수 있어야 함(없는 항목은 기본값).
 export const SETTINGS_FILE_FORMAT = 'debate-pdf-grader-settings';
-export const SETTINGS_FILE_VERSION = 1;
+export const SETTINGS_FILE_VERSION = 2;
 function toSettingsFile() {
   flushPendingInputs();
   return {
@@ -1038,13 +1343,14 @@ function toSettingsFile() {
     idDigits: state.idDigits,
     sections: state.sections.map((s) => {
       const draft = store.get(draftKey(s.id));
-      const out = { name: s.name, criteriaText: s.criteriaText, layoutDefault: s.layoutDefault, notes: s.notes };
+      const out = { name: s.name, criteriaText: s.criteriaText, layoutDefault: s.layoutDefault, notes: s.notes, keywords: s.keywords || '' };
       if (typeof draft === 'string' && draft !== s.criteriaText) out.criteriaDraft = draft; // 저장 안 한 작성 중 내용
       return out;
     }),
   };
 }
-// 어떤 버전의 파일이든 현재 형식 {idDigits, sections:[{name, criteriaText, criteriaDraft, layoutDefault, notes}]}로 바꾼다
+// 어떤 버전의 파일이든 현재 형식 {idDigits, sections:[{name, criteriaText, criteriaDraft, layoutDefault, notes, keywords}]}로 바꾼다
+// v1 파일에는 keywords(파일 이름 키워드)가 없으므로 빈 값
 function fromSettingsFile(obj) {
   if (!obj || typeof obj !== 'object') throw new Error('설정 파일 형식이 아니에요.');
   const str = (v) => (typeof v === 'string' ? v : '');
@@ -1054,6 +1360,7 @@ function fromSettingsFile(obj) {
     criteriaDraft: typeof x?.criteriaDraft === 'string' ? x.criteriaDraft : null,
     layoutDefault: ['auto', 'duplex', 'simplex'].includes(x?.layoutDefault) ? x.layoutDefault : 'auto',
     notes: str(x?.notes),
+    keywords: str(x?.keywords).slice(0, 200),
   });
   let sections;
   if (Array.isArray(obj.sections)) {
@@ -1107,7 +1414,7 @@ function applyImport() {
     const id = keep ? keep.id : newSecId();
     used.add(id);
     const c = x.criteriaText.trim() ? compileCriteria(x.criteriaText) : { criteria: [], rubric: null };
-    return { id, name: x.name, criteriaText: x.criteriaText, criteria: c.criteria, rubric: c.rubric, savedAt: c.criteria.length ? Date.now() : null, notes: x.notes, layoutDefault: x.layoutDefault, draft: x.criteriaDraft };
+    return { id, name: x.name, criteriaText: x.criteriaText, criteria: c.criteria, rubric: c.rubric, savedAt: c.criteria.length ? Date.now() : null, notes: x.notes, layoutDefault: x.layoutDefault, keywords: x.keywords, draft: x.criteriaDraft };
   });
   for (const s of state.sections) if (!used.has(s.id)) { for (const id of filesOf(s.id)) removeFile(id); store.del(draftKey(s.id)); draftAt.delete(s.id); }
   for (const s of next) {
@@ -1166,7 +1473,7 @@ async function buildRequest(requestId) {
       return {
         id: s.id, name: secName(s), criteriaText: s.criteriaText, notes: s.notes, layoutDefault: s.layoutDefault,
         rubric: rb,
-        items: s.criteria.map((c) => ({ name: c.name, points: rb.mode === 'deduct' ? null : c.points, deductions: (c.deductions || []).map((d) => ({ text: d.text, points: -d.pts })) })),
+        items: s.criteria.map((c) => ({ name: c.name, points: rb.mode === 'deduct' ? null : c.points, deductions: (c.deductions || []).map((d) => ({ text: d.text, points: -d.pts, keyword: d.keyword || shortReason(d.text, c.name) })) })),
         gradingPrompt: buildGradingPrompt({ prompt: s.criteriaText, criteria: s.criteria, rubric: rb, notes: s.notes, idDigits: state.idDigits }),
       };
     }),
@@ -1183,6 +1490,7 @@ async function buildRequest(requestId) {
     manifest.files.push({
       fileId: f.id, name: f.name, path, section: secName(sec), sectionId: sec.id,
       layout: r?.layout || (layoutChoice(f) === 'auto' ? null : layoutChoice(f)), layoutChosenByTeacher: layoutChoice(f) !== 'auto',
+      pagesPerStudent: r?.per || (layoutChoice(f) === 'duplex' ? 2 : layoutChoice(f) === 'simplex' ? 1 : null),
       pages: r?.pages || null,
       // 프로그램이 미리 나눈 학생별 쪽 (참고용, 틀리면 Claude가 바로잡아도 됨)
       studentsHint: r ? r.students.map((st) => ({ pages: st.pages, studentId: st.studentId || '', name: st.name || '' })) : null,
@@ -1261,9 +1569,9 @@ function importResult(obj, sourceName = '') {
     const rb = rubricOf(sec);
     const sts = rf.students.map((s, i) => {
       const pick = (c, k) => s.scores.find((x) => x.name === c.name) || s.scores.find((x) => norm(x.name) === norm(c.name)) || (s.scores.length === crit.length ? s.scores[k] : null);
-      const scores = crit.map((c, k) => { const x = pick(c, k); return { name: c.name, points: c.points, score: x?.score ?? null, comment: x?.comment || '' }; });
+      const scores = crit.map((c, k) => { const x = pick(c, k); return { name: c.name, points: c.points, score: x?.score ?? null, comment: x?.comment || '', deductions: x?.deductions || [], answer: x?.answer || '' }; });
       const pages = s.pages;
-      const base = { idx: i + 1, blank: s.status === 'blank', pages, pageLabel: pages.length ? (pages.length === 1 ? `${pages[0]}쪽` : `${pages[0]}~${pages[pages.length - 1]}쪽`) : '', studentId: s.studentId, name: s.name, mode: 'claude', textPreview: s.comment };
+      const base = { idx: i + 1, blank: s.status === 'blank', pages, pageLabel: pages.length ? (pages.length === 1 ? `${pages[0]}쪽` : `${pages[0]}~${pages[pages.length - 1]}쪽`) : '', studentId: s.studentId, name: s.name, mode: 'claude', textPreview: s.comment, comment: s.comment, answer: s.answer };
       if (s.status === 'unreadable') return { ...base, status: 'fail', reason: s.comment || '글씨를 판독할 수 없어요 (Claude)', scores, total: null };
       let total;
       if (s.status === 'blank') total = rb.blank ?? rb.floor ?? s.total ?? 0; // 백지: 기준의 백지 점수 → 최저점 → Claude가 적은 총점
@@ -1271,7 +1579,8 @@ function importResult(obj, sourceName = '') {
       return { ...base, status: total == null ? 'fail' : 'success', reason: total == null ? '점수가 비어 있어요' : '', scores, total };
     });
     const ok = sts.filter((x) => x.status === 'success').length;
-    f.result = { pages: rf.pages || f.result?.pages || null, layout: rf.layout || f.result?.layout || null, layoutAuto: false, layoutReason: 'Claude가 판단', students: sts, source: 'claude', gradedAt: res.gradedAt, requestId: res.requestId };
+    const per = rf.layout === 'duplex' ? 2 : rf.layout === 'simplex' ? 1 : (sts[0]?.pages.length || f.result?.per || null);
+    f.result = { pages: rf.pages || f.result?.pages || null, layout: rf.layout || (per > 2 ? 'set' : f.result?.layout) || null, per, layoutAuto: false, layoutReason: 'Claude가 판단', students: sts, source: 'claude', gradedAt: res.gradedAt, requestId: res.requestId };
     f.status = ok ? 'success' : 'fail';
     f.error = ok ? '' : (sts[0]?.reason || '채점 결과가 없어요');
     f.sig = fileSig(f);
@@ -1404,6 +1713,7 @@ initSettings();
 initSettingsIO();
 initEvents();
 initClaude();
+initViewer();
 if (!location.hash && state.sections.some((s) => s.criteria.length)) history.replaceState(null, '', '#files');
 route();
 renderBadges();

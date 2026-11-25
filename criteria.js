@@ -55,6 +55,45 @@ const num = (x) => Number(x);
  *  - 감점식: 항목(“1. 주장”) 아래 “-4점” 같은 감점 규칙 → 만점에서 감점을 뺀 값이 총점
  * 공통 규칙: 최저점(“48점 이하로 내려가면 48점으로 표기”), 백지 점수(“백지 … 48점”), 만점(“만점 100점”)
  */
+// 감점 규칙 문장 → 결과표에 쓸 짧은 핵심 키워드
+//   "찬성 또는 반대 의견이 누락되어 있는 경우(-2점)" (항목: 나의 주장) → "주장 누락"
+const REASONS = [
+  [/\d+\s*개가?\s*아닌|개수/, '개수 오류'],
+  [/신뢰(?:할\s*수\s*없|하기\s*어렵|성\s*(?:이\s*)?(?:낮|없|부족))/, '신뢰성 낮음'],
+  [/누락|빠[진지졌뜨]|없[는을음거고]|미기재|미작성|미제시|밝히지\s*않|안\s*쓴|쓰지\s*않|제시하지\s*않|작성하지\s*않/, '누락'],
+  [/뒷받침하지\s*못|뒷받침이\s*(?:안|부족)|타당하지\s*않|타당성/, '뒷받침 부족', 1],
+  [/관련\s*(?:이\s*)?없|무관|벗어/, '주제 이탈'],
+  [/불일치|일치하지\s*않|부합하지\s*않|맞지\s*않|어긋/, '불일치', 1],
+  [/부적절|적절하지\s*않/, '부적절'],
+  [/불명확|명확하지\s*않|모호|애매/, '불명확'],
+  [/부족|모자/, '부족'],
+  [/미흡/, '미흡'],
+  [/오류|틀[린렸리]|잘못/, '오류'],
+  [/초과|넘[는은]|넘어/, '초과'],
+  [/미달|못\s*미치/, '미달'],
+  [/중복|반복/, '중복'],
+  [/출처/, '출처 문제'],
+];
+const KW_STOP = new Set(['찬성', '반대', '또는', '혹은', '및', '의견', '내용', '경우', '학생', '각', '해당', '모두', '하나', '이상', '이하', '있는', '되어', '하는', '것', '때', '등', '중', '그', '이', '전혀', '제대로', '모든', '총']);
+const stripJosa = (w) => w.replace(/(으로서|으로써|에서는|에게서|으로|에서|에게|이나|이며|이고|이란|라는|이라|은|는|이|가|을|를|의|에|와|과|도|로|만)$/, '');
+export function shortReason(text, itemName = '') {
+  const t = String(text || '')
+    .replace(/\(?\s*[-−–]\s*\d+(?:\.\d+)?\s*점\s*\)?/g, '')
+    .replace(/\d+(?:\.\d+)?\s*점\s*(?:씩\s*)?감점/g, '')
+    .replace(/^\s*(?:[-*•·▶▷]|\d+[.)])\s*/, '')
+    .trim();
+  const itemCore = stripJosa((String(itemName).replace(/\(.*?\)/g, '').match(/[가-힣A-Za-z0-9]+/g) || []).pop() || '');
+  for (const [re, label, first] of REASONS) {
+    const m = t.match(re);
+    if (!m) continue;
+    const words = (t.slice(0, m.index).match(/[가-힣A-Za-z0-9]+/g) || []).map(stripJosa).filter((w) => w.length >= 2 && !KW_STOP.has(w) && !/^\d+(?:개|번|가지|문장|줄|자|쪽)?$/.test(w));
+    let topic = (first ? words[0] : words.pop()) || itemCore;
+    if (label.includes(topic) || topic === label) topic = '';
+    return `${topic ? `${topic} ` : ''}${label}`.slice(0, 24);
+  }
+  return t.length > 14 ? `${t.slice(0, 14)}…` : t || (itemCore ? `${itemCore} 감점` : '감점');
+}
+
 export function parseCriteria(src) {
   const text = String(src ?? '').replace(/\r\n?/g, '\n').replace(/[​-‍﻿]/g, '');
   const lines = text.split('\n');
@@ -118,6 +157,7 @@ export function parseCriteria(src) {
       if (pts > 0 && pts <= MAX_POINTS) {
         deductCount++;
         const d = { text: line.replace(/^[-*•·▶▷]\s*/, ''), pts };
+        d.keyword = shortReason(d.text, current?.name || '');
         if (current) { current.deductions.push(d); current.desc = (current.desc ? `${current.desc}\n` : '') + line; }
         else if (!inNotes) orphanDeductions.push(d);
         return;
