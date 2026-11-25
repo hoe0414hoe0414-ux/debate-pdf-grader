@@ -1643,9 +1643,12 @@ async function pollFolder() {
     for (const p of cc.pending) {
       try {
         const d = await (await cc.dir.getDirectoryHandle(bridge.REQUESTS_DIR)).getDirectoryHandle(p.id);
-        try { cc.progress[p.id] = JSON.parse(await (await (await d.getFileHandle('status.json')).getFile()).text()); } catch { /* 아직 없음 */ }
+        try { cc.progress[p.id] = JSON.parse((await (await (await d.getFileHandle('status.json')).getFile()).text()).replace(/^\uFEFF/, '')); } catch { /* 아직 없음 */ }
       } catch { /* 폴더 없음 */ }
     }
+    // 도우미가 건너뛴 예전 요청(같은 PDF를 여러 번 보낸 경우)은 목록에서 뺀다
+    const skipped = cc.pending.filter((p) => cc.progress[p.id]?.state === 'skipped').map((p) => p.id);
+    if (skipped.length) { cc.pending = cc.pending.filter((p) => !skipped.includes(p.id)); saveBridge(); }
     for (const r of await bridge.findResults(cc.dir)) {
       const key = `${r.requestId}/${r.name}`;
       if (cc.imported[key] >= r.file.lastModified) continue;
@@ -1681,7 +1684,8 @@ function renderClaude() {
   const helperOn = connected && cc.helperAt && Date.now() - cc.helperAt < 30000;
   const lines = [];
   if (connected) {
-    if (helperOn && cc.helperErr) lines.push(`<span class="bad">● 채점 도우미: ${esc(cc.helperErr)}</span>`);
+    if (helperOn && cc.helperErr === 'nocli') lines.push(`<span class="bad">● 채점 도우미는 켜졌지만 이 PC에서 Claude Code를 찾지 못했어요.</span><br><span>설치: 시작 메뉴에서 <b>PowerShell</b>을 열고 <code>irm https://claude.ai/install.ps1 | iex</code> 를 붙여 넣고 Enter → 끝나면 <code>claude</code> 입력 후 Enter → 화면 안내대로 Claude 계정으로 로그인 → 창 닫기. 설치되면 30초 안에 도우미가 알아서 찾아 채점을 시작해요.</span>`);
+    else if (helperOn && cc.helperErr) lines.push(`<span class="bad">● 채점 도우미: ${esc(cc.helperErr === 'Claude Code가 설치되어 있지 않아요' ? '예전 도우미예요. ‘바탕화면 아이콘 만들기’를 다시 실행해 주세요.' : cc.helperErr)}</span>`);
     else lines.push(helperOn ? '<span class="ok">● 채점 도우미 켜짐(백그라운드) — ‘Claude 채점 시작’만 누르면 자동으로 채점해요</span>' : `<span class="muted">○ 채점 도우미가 꺼져 있어요. 바탕화면 ‘토론 PDF 채점기’로 프로그램을 열면 같이 켜져요. 처음이라면 연결한 폴더의 <b>‘채점 도우미 켜기.bat’을 한 번</b> 더블클릭해 바로가기를 바꿔 주세요.</span>`);
   }
   for (const p of cc.pending.slice(-3).reverse()) {
