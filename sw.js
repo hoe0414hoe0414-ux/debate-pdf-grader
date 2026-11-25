@@ -1,6 +1,6 @@
 // 서비스 워커: 앱 파일은 '네트워크 우선'(항상 최신), 끊기면 저장본 사용.
 // pdf.js(vendor/)는 용량이 커서 '저장본 우선'으로 두 번째 방문부터 즉시 로딩.
-const CACHE = 'dpg-v9';
+const CACHE = 'dpg-v10';
 const VENDOR = 'dpg-vendor-pdfjs-4.4.168';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {

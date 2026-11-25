@@ -56,17 +56,33 @@ while ($true) {
     foreach ($old in ($waiting | Select-Object -Skip 1)) { New-Item -ItemType File -Path "$($old.FullName)\.skipped" | Out-Null; Write-Json "$($old.FullName)\status.json" @{ state = 'skipped'; message = '더 최근 요청을 채점해서 건너뜀' } }
     $waiting | Select-Object -First 1 | ForEach-Object {
       $d = $_.FullName
+      $reqName = $_.Name
       if ($true) {
         New-Item -ItemType File -Path "$d\.running" | Out-Null
         Write-Json "$d\status.json" @{ state = 'grading'; message = 'Claude가 채점을 시작했어요' }
         Write-Host "[$(Get-Date -Format HH:mm:ss)] 채점 시작: $($_.Name)"
-        Push-Location $d
         $prompt = '이 폴더의 GRADING.md 지침을 정확히 따라 request.json 의 PDF를 채점하고 result.json 을 쓰세요. 진행 상황은 status.json 에 쓰세요. 이 폴더 밖의 파일은 건드리지 마세요.'
-        & $claude -p $prompt --permission-mode acceptEdits --allowedTools "Read" "Write" "Edit" "Glob" "Grep" "Bash(python:*)" "Bash(py:*)" *>&1 | Tee-Object -FilePath "$d\claude.log"
-        Pop-Location
+        # Claude는 따로 띄우고, 채점하는 동안에도 5초마다 ‘도우미 켜짐’ 신호를 남긴다 (채점이 길어도 프로그램에 ‘꺼짐’으로 보이지 않게)
+        $argLine = '-p "' + $prompt + '" --permission-mode acceptEdits --allowedTools Read Write Edit Glob Grep "Bash(python:*)" "Bash(py:*)"'
+        $t0 = Get-Date
+        try {
+          $proc = Start-Process -FilePath $claude -ArgumentList $argLine -WorkingDirectory $d -WindowStyle Hidden -PassThru -RedirectStandardOutput "$d\claude.log" -RedirectStandardError "$d\claude.err.log"
+          while (-not $proc.HasExited) {
+            Write-Json (Join-Path $req 'helper.json') @{ at = (Get-Date).ToString('o'); claude = $true; claudePath = $claude; busy = $reqName; minutes = [int]((Get-Date) - $t0).TotalMinutes }
+            Start-Sleep -Seconds 5
+          }
+        } catch { Add-Content -Path "$d\claude.err.log" -Value ("도우미가 Claude를 실행하지 못함: " + $_.Exception.Message) -Encoding UTF8 }
         Remove-Item "$d\.running" -ErrorAction SilentlyContinue
         if (Test-Path "$d\result.json") { Write-Json "$d\status.json" @{ state = 'done' }; Write-Host "  → 완료" -ForegroundColor Green }
-        else { New-Item -ItemType File -Path "$d\.failed" | Out-Null; Write-Json "$d\status.json" @{ state = 'error'; message = 'result.json 이 만들어지지 않았어요 (claude.log 확인)' }; Write-Host "  → 실패 (claude.log 확인)" -ForegroundColor Red }
+        else {
+          New-Item -ItemType File -Path "$d\.failed" | Out-Null
+          # 실패 이유를 프로그램 화면에 보이도록 로그 끝부분을 함께 남긴다
+          $tail = ''
+          foreach ($lf in @("$d\claude.err.log", "$d\claude.log")) { if (Test-Path $lf) { $t = (Get-Content $lf -Encoding UTF8 -Tail 3 -ErrorAction SilentlyContinue) -join ' '; if ($t.Trim()) { $tail = $t.Trim(); break } } }
+          if ($tail.Length -gt 200) { $tail = $tail.Substring($tail.Length - 200) }
+          Write-Json "$d\status.json" @{ state = 'error'; message = ('result.json 이 만들어지지 않았어요' + $(if ($tail) { ' · ' + $tail } else { '' })) }
+          Write-Host "  → 실패 (claude.log 확인)" -ForegroundColor Red
+        }
       }
     }
   }
