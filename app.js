@@ -75,8 +75,7 @@ const state = {
   activeSec: loaded.sections.some((s) => s.id === loaded.activeSec) ? loaded.activeSec : loaded.sections[0].id, // 설정·업로드 화면에서 고른 영역
   files: new Map(),   // id -> 파일 항목
   order: [],          // 정렬된 id 목록 (영역 순서 → 파일 이름 순)
-  showWhy: true,      // 학급 표에서 채점 근거·답안 펼침
-  result: { kind: 'all' }, // 결과 화면에서 보는 것: {kind:'all'} | {kind:'sec', sec} | {kind:'file', sec, file}
+  result: { kind: 'all' }, // 결과 화면에서 보는 것: {kind:'all', cls?} | {kind:'sec', sec} | {kind:'file', sec, file}
   view: 'settings',
 };
 let seq = 0;
@@ -133,7 +132,10 @@ function toast(msg) {
 function route() {
   const [view, sub] = location.hash.replace(/^#/, '').split('/');
   const v = ['settings', 'files', 'results'].includes(view) ? view : 'settings';
-  if (v === 'results' && sub) {
+  if (v === 'results' && sub === 'all') {
+    const cls = location.hash.split('/')[2];
+    state.result = { kind: 'all', cls: cls ? decodeURIComponent(cls) : null };
+  } else if (v === 'results' && sub) {
     const f = state.files.get(sub);
     if (f) state.result = { kind: 'file', sec: f.sec, file: f.id };
     else if (secById(sub)) state.result = { kind: 'sec', sec: sub };
@@ -760,7 +762,8 @@ function renderResults() {
   if (anyStale && !notice.innerHTML) notice.innerHTML = '설정이 바뀌어 일부 점수는 이전 기준으로 매겨졌어요. <button type="button" class="btn small" data-act="regrade">새 기준으로 다시 채점</button>';
 
   // 전체 결과표 | 영역 이름 ▾ …
-  const tabsHtml = [`<button type="button" class="tab" role="tab" data-rtab="all" aria-selected="${sel.kind === 'all'}">전체 결과표</button>`]
+  const allCur = sel.kind === 'all' ? ` · ${sel.cls ? esc(clsLabel(sel.cls)) : '모든 학급'}` : '';
+  const tabsHtml = [`<button type="button" class="tab sec-rtab" role="tab" data-rtab="all" aria-selected="${sel.kind === 'all'}" aria-haspopup="menu"${menuFor === 'all' ? ' aria-expanded="true"' : ''} title="모든 영역 점수를 학생별로 더한 표: 눌러서 학급 고르기">전체 결과표${allCur} <span class="caret" aria-hidden="true">▾</span></button>`]
     .concat(state.sections.map((s) => {
       const on = sel.kind !== 'all' && sel.sec === s.id;
       const c = counts(s.id);
@@ -781,11 +784,11 @@ function renderResults() {
 
   if (editing && body.contains(editing)) return; // 칸을 고치는 중에는 표를 그대로 둔다
   // 채점 중 표가 다시 그려져도 보고 있던 스크롤 위치를 유지
-  const viewKey = `${sel.kind}|${sel.sec || ''}|${sel.file || ''}`;
+  const viewKey = `${sel.kind}|${sel.sec || ''}|${sel.file || ''}|${sel.cls || ''}`;
   const prevWraps = [...body.querySelectorAll('.table-wrap')];
   const keep = body.dataset.key === viewKey ? prevWraps.map((w) => [w.scrollTop, w.scrollLeft]) : null;
   if (!state.files.size) body.innerHTML = '<div class="empty">아직 채점한 파일이 없어요. <a href="#files">업로드 파일</a>에서 PDF를 올려 주세요.</div>';
-  else if (sel.kind === 'all') body.innerHTML = renderAllSections();
+  else if (sel.kind === 'all') body.innerHTML = renderCombined(sel.cls);
   else if (sel.kind === 'sec') body.innerHTML = `<div class="stack">${renderSectionTable(secById(sel.sec))}${FOOT}</div>`;
   else body.innerHTML = renderDetail(state.files.get(sel.file));
   body.dataset.key = viewKey;
@@ -818,9 +821,15 @@ const idCells = (f, st) => {
   return edCell(f, st, 'id', idOf(f, st) ? esc(idOf(f, st)) : scan ? UNREAD : '–', 'idc', st.studentId || '없음')
     + edCell(f, st, 'name', nameOf(f, st) ? esc(nameOf(f, st)) : scan ? UNREAD : '–', 'namec', st.name || '없음');
 };
-const viewBtn = (f, st) => (f.file ? `<td class="vcell"><button type="button" class="btn tiny" data-view-st="${f.id}|${st.idx}" title="이 학생의 답안지와 채점 근거 보기">답안지</button></td>` : '<td class="vcell"></td>');
+// 결과표의 학번·이름 칸: 누르면 그 학생의 채점 분석이 열린다 (학번·이름 고치기는 분석 창에서)
+const idLinks = (f, st) => {
+  const scan = st.mode === 'scan' || st.mode === 'claude';
+  const cell = (v, cls) => `<td class="${cls} stl"><button type="button" class="linkish" data-open-st="${f.id}|${st.idx}" title="이 학생의 채점 분석 보기">${v ? esc(v) : scan ? UNREAD : '–'}</button></td>`;
+  return cell(idOf(f, st), 'idc') + cell(nameOf(f, st), 'namec');
+};
+const viewBtn = (f, st) => `<td class="vcell"><button type="button" class="btn tiny" data-open-st="${f.id}|${st.idx}" title="이 학생의 채점 근거·답안${f.file ? '·답안지' : ''} 보기">분석</button></td>`;
 
-const FOOT = `<p class="muted foot">※ ‘판독 전’·‘채점 전’은 손글씨 스캔본이라 아직 Claude가 채점하지 않은 학생이에요. 업로드 화면의 ‘Claude 채점 시작’ 후 결과를 불러오면 학번·이름·점수가 채워져요. 빨간색 ${BAD}는 글씨를 판독하지 못한 경우예요. 점수·학번·이름 칸을 누르면 직접 고칠 수 있어요(고친 칸은 노란색). 학급 이름을 누르면 그 학급의 채점 근거와 답안이 함께 나와요.</p>`;
+const FOOT = `<p class="muted foot">※ 학번·이름을 누르면 그 학생의 채점 분석(항목별 근거·답안·답안지)이 한 명씩 나와요. ←/→ 키로 다음 학생으로 넘길 수 있어요. ‘판독 전’·‘채점 전’은 손글씨 스캔본이라 아직 Claude가 채점하지 않은 학생이에요. 빨간색 ${BAD}는 글씨를 판독하지 못한 경우예요. 점수 칸을 누르면 직접 고칠 수 있어요(고친 칸은 노란색, 학번·이름은 분석 창에서 고쳐요).</p>`;
 
 // 한 영역의 모든 학생을 한 표로 (영역마다 채점 항목이 달라서 표를 영역별로 나눈다)
 function renderSectionTable(sec) {
@@ -831,7 +840,7 @@ function renderSectionTable(sec) {
   if (!ids.length) return `${title}<div class="empty">이 영역에 올린 파일이 없어요. <a href="#files" data-go-sec="${sec.id}">업로드 파일</a>에서 올려 주세요.</div>`;
   if (!crit.length) return `${title}<div class="empty">‘${esc(secName(sec))}’의 채점 기준이 아직 저장되지 않았어요. <a href="#settings" data-go-sec="${sec.id}">설정</a>에서 저장하면 바로 채점돼요.</div>`;
   const head = `<tr><th>학번</th><th>이름</th><th>학급</th><th>쪽</th>${crit.map((x) => `<th class="num">${critHead(sec, x)}</th>`).join('')}<th class="num">${totalHead(sec)}</th><th class="vcell"></th></tr>`;
-  const rows = studentsOf(ids).map(({ f, st }) => `<tr>${idCells(f, st)}<td class="cls"><button type="button" class="linkish" data-open-file="${f.id}" title="${esc(fileTitle(f))}">${esc(fileTitle(f))}</button></td><td class="pg">${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}${viewBtn(f, st)}</tr>`);
+  const rows = studentsOf(ids).map(({ f, st }) => `<tr class="st-click" data-open-st="${f.id}|${st.idx}">${idLinks(f, st)}<td class="cls"><button type="button" class="linkish" data-open-file="${f.id}" title="${esc(fileTitle(f))}">${esc(fileTitle(f))}</button></td><td class="pg">${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}${viewBtn(f, st)}</tr>`);
   for (const id of ids) {
     const f = state.files.get(id);
     if (f.result) continue;
@@ -841,10 +850,101 @@ function renderSectionTable(sec) {
   return `${title}<div class="table-wrap"><table class="grid"><thead>${head}</thead><tbody>${rows.join('')}</tbody></table></div>`;
 }
 
-function renderAllSections() {
-  const used = state.sections.filter((s) => filesOf(s.id).length);
-  if (!used.length) return '<div class="empty">아직 채점한 파일이 없어요.</div>';
-  return `<div class="stack">${used.map((s) => `<section class="stack sec-block">${renderSectionTable(s)}</section>`).join('')}${FOOT}</div>`;
+// ── 전체 결과표: 학급 찾기 + 같은 학생의 영역 점수 합치기 ─────────────────
+// 학번 5자리 20301 → 2학년 3반, 4자리 2301 → 2학년 3반. 학번이 없으면 파일(학급)의 다수 학번 → 파일 이름(1-1, 1학년 1반)
+const digitsOf = (id) => String(id || '').replace(/\D/g, '');
+function classOfId(id) {
+  const d = digitsOf(id);
+  if (d.length !== state.idDigits || String(id).trim().replace(/\s/g, '').length !== d.length) return null;
+  return `${Number(d[0])}-${Number(d.slice(1, state.idDigits - 2))}`;
+}
+function classOfName(name) {
+  const t = fileTitle({ name });
+  const m = t.match(/(\d)\s*학년\s*(\d{1,2})\s*반/) || t.match(/(?:^|[^\d])(\d)\s*[-_]\s*(\d{1,2})(?!\d)/);
+  return m ? `${Number(m[1])}-${Number(m[2])}` : null;
+}
+function fileClass(f) {
+  const cnt = new Map();
+  for (const st of f.result?.students || []) { const k = classOfId(idOf(f, st)); if (k) cnt.set(k, (cnt.get(k) || 0) + 1); }
+  let best = null, n = 0;
+  for (const [k, v] of cnt) if (v > n) { best = k; n = v; }
+  return best || classOfName(f.name) || `파일:${fileTitle(f)}`;
+}
+const clsLabel = (k) => { const m = /^(\d+)-(\d+)$/.exec(k || ''); return m ? `${m[1]}학년 ${m[2]}반` : String(k || '').replace(/^파일:/, ''); };
+const usedSections = () => state.sections.filter((s) => filesOf(s.id).length);
+// 같은 학생 = 같은 학번. 학번을 못 읽은 학생은 같은 학급의 같은 이름이면 같은 학생으로 본다.
+function combineStudents() {
+  const recs = new Map(), later = [];
+  const add = (key, info, it) => {
+    let r = recs.get(key);
+    if (!r) recs.set(key, (r = { key, id: info.id, name: info.name, cls: info.cls, bySec: new Map(), dup: [] }));
+    if (!r.name && info.name) r.name = info.name;
+    if (r.bySec.has(it.sec.id)) r.dup.push(secName(it.sec)); else r.bySec.set(it.sec.id, it);
+  };
+  for (const sec of usedSections()) {
+    for (const { f, st } of studentsOf(filesOf(sec.id))) {
+      const id = String(idOf(f, st) || '').trim(), name = String(nameOf(f, st) || '').trim();
+      const info = { id, name, cls: classOfId(id) || fileClass(f) };
+      const it = { sec, f, st };
+      if (classOfId(id)) add(`id:${digitsOf(id)}`, info, it); else later.push([info, it]);
+    }
+  }
+  for (const [info, it] of later) {
+    let key = null;
+    if (info.name) {
+      for (const r of recs.values()) if (r.cls === info.cls && squash(r.name) === squash(info.name) && !r.bySec.has(it.sec.id)) { key = r.key; break; }
+      if (!key) key = recs.has(`nm:${info.cls}|${squash(info.name)}`) ? `nm:${info.cls}|${squash(info.name)}|${it.f.id}|${it.st.idx}` : `nm:${info.cls}|${squash(info.name)}`;
+    } else key = `x:${it.f.id}|${it.st.idx}`;
+    add(key, info, it);
+  }
+  return [...recs.values()].sort((a, b) => (!a.id !== !b.id ? (a.id ? -1 : 1) : collator.compare(a.id, b.id) || collator.compare(a.cls, b.cls) || collator.compare(a.name, b.name)));
+}
+function classList(recs) {
+  const m = new Map();
+  for (const r of recs) m.set(r.cls, (m.get(r.cls) || 0) + 1);
+  return [...m].sort((a, b) => (a[0].startsWith('파일:') - b[0].startsWith('파일:')) || collator.compare(a[0], b[0]));
+}
+// 한 영역 칸의 값: {v: 숫자|null, html}
+function secCell(it) {
+  if (!it) return { v: null, state: 'none', html: '–' };
+  const { f, st, sec } = it;
+  if (isWait(f, st)) return { v: null, state: 'wait', html: '<span class="wait-tag">채점 전</span>' };
+  if (isBad(f, st)) return { v: null, state: 'bad', html: BAD };
+  const t = totalEff(f, st, sec);
+  return t == null ? { v: null, state: 'none', html: '–' } : { v: t, state: 'ok', html: fmt(t) };
+}
+function combinedRow(r, secs) {
+  const cells = secs.map((s) => ({ s, it: r.bySec.get(s.id), c: secCell(r.bySec.get(s.id)) }));
+  const nums = cells.filter((x) => x.c.v != null);
+  const sum = nums.reduce((a, x) => a + x.c.v, 0);
+  const missing = cells.filter((x) => x.c.v == null).map((x) => secName(x.s));
+  return { cells, sum: nums.length ? sum : null, missing, wait: cells.some((x) => x.c.state === 'wait') };
+}
+function renderCombined(cls) {
+  const secs = usedSections();
+  if (!secs.length) return '<div class="empty">아직 채점한 파일이 없어요.</div>';
+  const all = combineStudents();
+  const list = cls ? all.filter((r) => r.cls === cls) : all;
+  const waiting = state.order.filter((id) => !state.files.get(id).result).length;
+  const maxSum = secs.reduce((a, s) => a + (rubricOf(s).max || 0), 0);
+  const title = `<div class="sec-title"><h2>전체 결과표 · ${cls ? esc(clsLabel(cls)) : '모든 학급'}</h2><span class="muted">학생 ${list.length}명 · ${secs.map((s) => esc(secName(s))).join(' + ')} 합산</span></div>`;
+  const note = waiting ? `<div class="notice">아직 읽지 않은 파일이 ${waiting}개 있어요. 다 읽으면 합계에 더해져요.</div>` : '';
+  if (!list.length) return `<div class="stack">${title}${note}<div class="empty">${cls ? '이 학급의 학생이 없어요. 위의 ‘전체 결과표 ▾’에서 다른 학급을 골라 주세요.' : '아직 학생 점수가 없어요.'}</div></div>`;
+  const head = `<tr><th>학번</th><th>이름</th>${cls ? '' : '<th>학급</th>'}${secs.map((s) => `<th class="num"><span class="th-name">${esc(secName(s))}</span><small>${fmt(rubricOf(s).max)}점</small></th>`).join('')}<th class="num"><span class="th-name">합계</span><small>${fmt(maxSum)}점</small></th><th class="vcell"></th></tr>`;
+  const rows = list.map((r) => {
+    const { cells, sum, missing, wait } = combinedRow(r, secs);
+    const first = cells.find((x) => x.it)?.it;
+    const open = first ? ` data-open-st="${first.f.id}|${first.st.idx}"` : '';
+    const scan = first && (first.st.mode === 'scan' || first.st.mode === 'claude');
+    const dup = r.dup.length ? ` <span class="demo-tag" title="${esc(r.dup.join(', '))} 영역에 같은 학생이 두 번 이상 있어요. 첫 번째 점수만 더했어요.">중복</span>` : '';
+    const link = (v) => `<button type="button" class="linkish"${open} title="이 학생의 채점 분석 보기">${v ? esc(v) : scan ? UNREAD : '–'}</button>`;
+    const sc = cells.map((x) => `<td class="num${x.c.state === 'bad' ? ' bad' : x.c.state !== 'ok' ? ' pending' : ''}"${x.it ? ` data-open-st="${x.it.f.id}|${x.it.st.idx}" title="${esc(secName(x.s))} 채점 분석 보기"` : ' title="이 영역 결과에 없는 학생이에요"'}>${x.c.html}</td>`).join('');
+    const part = sum != null && missing.length ? ` <small class="part" title="빠진 영역: ${esc(missing.join(', '))}">일부</small>` : '';
+    const tot = sum == null ? (wait ? '<span class="wait-tag">채점 전</span>' : '–') : `${fmt(sum)}${part}`;
+    return `<tr class="st-click"${open}><td class="idc stl">${link(r.id)}</td><td class="namec stl">${link(r.name)}${dup}</td>${cls ? '' : `<td class="cls">${esc(clsLabel(r.cls))}</td>`}${sc}<td class="num total${sum == null ? ' pending' : ''}">${tot}</td><td class="vcell">${first ? `<button type="button" class="btn tiny"${open}>분석</button>` : ''}</td></tr>`;
+  }).join('');
+  const foot = `<p class="muted foot">※ 같은 학번이면 같은 학생으로 보고 영역 점수를 더해요. 학번을 못 읽은 학생은 같은 학급·같은 이름이면 합쳐요. ‘–’는 그 영역 결과에 없는 학생, ‘일부’는 빠진 영역이 있어 일부만 더한 합계예요. 영역 점수를 누르면 그 영역의 채점 분석이 나와요. 점수를 고치려면 영역 탭에서 고쳐 주세요.</p>`;
+  return `<div class="stack">${title}${note}<div class="table-wrap"><table class="grid combined"><thead>${head}</thead><tbody>${rows}</tbody></table></div>${foot}</div>`;
 }
 
 // 항목별 감점 키워드: v2 결과는 deductions[], 예전 결과는 comment, 데모는 감점 규칙에서 뽑은 키워드
@@ -882,7 +982,7 @@ function renderDetail(f) {
   const r = f.result;
   const crit = sec.criteria;
   const stat = (k, v, cls = '') => `<div class="stat"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
-  const title = `<div class="sec-title"><h2>${esc(secName(sec))} · ${esc(fileTitle(f))}</h2>${f.file ? `<button type="button" class="btn small" data-view-st="${f.id}|">답안지 보기</button>` : ''}</div>`;
+  const title = `<div class="sec-title"><h2>${esc(secName(sec))} · ${esc(fileTitle(f))}</h2>${f.result?.students?.length ? `<button type="button" class="btn small" data-view-st="${f.id}|">한 명씩 채점 분석 보기</button>` : ''}</div>`;
   if (f.status !== 'success' && f.status !== 'fail') {
     return `<div class="stack">${title}<div class="empty">${f.status === 'grading' ? 'PDF를 읽는 중이에요…' : canGradeFile(f) ? '아직 읽지 않았어요.' : '이 영역의 채점 기준을 저장하면 읽기 시작해요.'}</div></div>`;
   }
@@ -898,22 +998,27 @@ function renderDetail(f) {
     ${stat('채점 불가', `${bad}명`, bad ? 'bad' : '')}
     ${stat('나눈 방식', `<span style="font-size:15px">${r.pages ? `${layoutTxt} · ${r.pages}쪽` : '–'}</span>`)}
   </div>`;
-  const cols = 5 + crit.length;
   const head = `<tr><th>학번</th><th>이름</th><th>쪽</th>${crit.map((c) => `<th class="num">${critHead(sec, c)}</th>`).join('')}<th class="num">${totalHead(sec)}</th><th class="vcell"></th></tr>`;
-  const rows = studentsOf([f.id]).map(({ st }) => `<tr class="st-row">${idCells(f, st)}<td class="pg">${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}${viewBtn(f, st)}</tr>`
-    + (state.showWhy ? `<tr class="why-row"><td colspan="${cols}">${whyHtml(f, st, sec)}</td></tr>` : '')).join('');
+  const rows = studentsOf([f.id]).map(({ st }) => `<tr class="st-click" data-open-st="${f.id}|${st.idx}">${idLinks(f, st)}<td class="pg">${esc(st.pageLabel || '–')}</td>${scoreCells(f, st, sec)}${viewBtn(f, st)}</tr>`).join('');
   const hint = r.layoutAuto ? `<p class="muted foot">학생 나누기가 틀렸다면 <a href="#files" data-go-sec="${sec.id}">업로드 파일</a>에서 이 파일의 ‘양면/단면’ 버튼을 눌러 바꿔 주세요. 판단 근거: ${esc(r.layoutReason)}</p>` : '';
-  const toggle = `<div class="why-toggle"><button type="button" class="btn small ghost" data-act="toggle-why">${state.showWhy ? '채점 근거·답안 접기' : '채점 근거·답안 펼치기'}</button></div>`;
-  return `<div class="stack">${title}${reason}${top}${toggle}<div class="table-wrap detail"><table class="grid"><thead>${head}</thead><tbody>${rows}</tbody></table></div>${hint}</div>`;
+  return `<div class="stack">${title}${reason}${top}<div class="table-wrap"><table class="grid"><thead>${head}</thead><tbody>${rows}</tbody></table></div>${FOOT}${hint}</div>`;
 }
 
 // ── 결과 영역 드롭다운 (영역 이름을 누르면 학급 고르기) ─────────────────
 const menu = $('#tab-menu');
 let menuFor = null;
 function menuHtml(secId) {
+  const sel = state.result;
+  if (secId === 'all') {
+    const cl = classList(combineStudents());
+    const on = (k) => sel.kind === 'all' && (sel.cls || null) === k;
+    const it = (k, label, n) => `<button type="button" role="menuitemradio" aria-checked="${on(k)}" data-pick-cls="${esc(k || '')}"><span class="mname">${label}</span>${n != null ? ` <small>학생 ${n}명</small>` : ''}</button>`;
+    if (!cl.length) return '<div class="menu-empty">아직 학생 점수가 없어요</div>';
+    return `<div class="menu-label">학급 선택 · ${cl.length}개 (모든 영역 합계)</div>` + cl.map(([k, n]) => it(k, esc(clsLabel(k)), n)).join('')
+      + '<div class="menu-sep" role="separator"></div>' + it(null, '모든 학급 한 표로 보기', null);
+  }
   const sec = secById(secId);
   const ids = filesOf(secId);
-  const sel = state.result;
   const item = (attr, label, on, extra = '') => `<button type="button" role="menuitemradio" aria-checked="${on}" ${attr}>${label}${extra}</button>`;
   if (!ids.length) return '<div class="menu-empty">이 영역에 올린 파일(학급)이 없어요</div>';
   return `<div class="menu-label">학급 선택 · ${ids.length}개</div>` + ids.map((id) => {
@@ -926,12 +1031,14 @@ function menuHtml(secId) {
     + item(`data-pick-sec="${secId}"`, `‘${esc(secName(sec))}’ 모든 학급 한 표로 보기`, sel.kind === 'sec' && sel.sec === secId, '');
 }
 function refreshMenu() {
-  if (!secById(menuFor)) { closeMenu(); return; }
+  if (menuFor !== 'all' && !secById(menuFor)) { closeMenu(); return; }
   const h = menuHtml(menuFor);
   if (menu.dataset.h === h) return;
-  const focusedId = document.activeElement?.closest?.('#tab-menu') ? (document.activeElement.dataset.pickFile || document.activeElement.dataset.pickSec) : null;
+  const ae = document.activeElement?.closest?.('#tab-menu') ? document.activeElement : null;
+  const attr = ae && ['data-pick-file', 'data-pick-sec', 'data-pick-cls'].find((a) => ae.hasAttribute(a));
+  const fsel = attr ? `[${attr}="${CSS.escape(ae.getAttribute(attr))}"]` : null;
   menu.innerHTML = h; menu.dataset.h = h;
-  if (focusedId) menu.querySelector(`[data-pick-file="${focusedId}"],[data-pick-sec="${focusedId}"]`)?.focus();
+  if (fsel) menu.querySelector(fsel)?.focus();
   placeMenu();
 }
 function placeMenu() {
@@ -958,7 +1065,7 @@ function closeMenu() {
 }
 function setResult(r) {
   state.result = r;
-  const h = r.kind === 'all' ? '#results' : `#results/${r.kind === 'file' ? r.file : r.sec}`;
+  const h = r.kind === 'all' ? (r.cls ? `#results/all/${encodeURIComponent(r.cls)}` : '#results') : `#results/${r.kind === 'file' ? r.file : r.sec}`;
   if (location.hash !== h) history.replaceState(null, '', h);
   closeMenu();
   renderResults();
@@ -1033,11 +1140,11 @@ function commitEdit(f, st, sec, field, raw) {
 // ── 학생 답안지 보기 (왼쪽: 답안지 원본, 오른쪽: 채점 근거 · 50:50) ────────────────
 const vw = { fid: null, idx: null, doc: null, docFid: null, token: 0, zoom: 1, lastFocus: null };
 const viewerEl = $('#viewer');
-const viewable = () => state.order.map((id) => state.files.get(id)).filter((f) => f.file && f.result?.students?.length);
+const viewable = () => state.order.map((id) => state.files.get(id)).filter((f) => f.result?.students?.length);
 function openViewer(fid = null, idx = null) {
   const list = viewable();
   if (!list.length) {
-    toast(state.files.size ? '답안지를 보려면 원본 PDF가 필요해요. 업로드 파일에 그 학급 PDF를 올려 주세요.' : '먼저 업로드 파일에서 PDF를 올려 주세요.');
+    toast(state.files.size ? '아직 채점된 학생이 없어요.' : '먼저 업로드 파일에서 PDF를 올려 주세요.');
     return;
   }
   const sel = state.result;
@@ -1111,6 +1218,7 @@ function renderViewerRight() {
 async function renderViewerPages(f, st) {
   const box = $('#vw-pages');
   const token = ++vw.token;
+  if (!f.file) { box.innerHTML = '<div class="why-empty">원본 PDF가 이 브라우저에 없어서 답안지 그림은 볼 수 없어요. 업로드 파일에 이 학급 PDF를 다시 올리면 볼 수 있어요. 오른쪽 채점 분석은 그대로 볼 수 있어요.</div>'; return; }
   if (!st.pages?.length) { box.innerHTML = '<div class="why-empty">이 학생의 쪽 정보가 없어요. (결과 파일에 쪽 번호가 없음)</div>'; return; }
   box.innerHTML = st.pages.map((p) => `<figure class="vw-page" data-p="${p}"><div class="vw-loading">${p}쪽 불러오는 중…</div><figcaption>${p}쪽</figcaption></figure>`).join('');
   box.scrollTop = 0;
@@ -1186,8 +1294,22 @@ function initViewer() {
 function exportCsv() {
   const q = (v) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const sel = validResult();
-  const secs = sel.kind === 'all' ? state.sections : [secById(sel.sec)];
   const lines = [];
+  if (sel.kind === 'all') {
+    const secs = usedSections();
+    const recs = combineStudents().filter((r) => !sel.cls || r.cls === sel.cls);
+    if (recs.length) {
+      lines.push(['학번', '이름', '학급', ...secs.map((s) => `${secName(s)}(${fmt(rubricOf(s).max)})`), `합계(${fmt(secs.reduce((a, s) => a + (rubricOf(s).max || 0), 0))})`, '비고']);
+      for (const r of recs) {
+        const { cells, sum, missing } = combinedRow(r, secs);
+        lines.push([r.id ? `="${r.id}"` : '', r.name, clsLabel(r.cls),
+          ...cells.map((x) => (x.c.v != null ? fmt(x.c.v) : x.c.state === 'wait' ? '채점 전' : x.c.state === 'bad' ? BAD : '')),
+          sum == null ? '' : fmt(sum),
+          [missing.length ? `빠진 영역: ${missing.join(', ')}` : '', r.dup.length ? `중복: ${r.dup.join(', ')}` : ''].filter(Boolean).join(' / ')]);
+      }
+    }
+  }
+  const secs = sel.kind === 'all' ? [] : [secById(sel.sec)];
   for (const sec of secs) {
     let ids = filesOf(sec.id);
     if (sel.kind === 'file') ids = ids.filter((id) => id === sel.file);
@@ -1211,11 +1333,11 @@ function exportCsv() {
     for (const id of ids) { const f = state.files.get(id); if (!f.result) lines.push([secName(sec), '', '', fileTitle(f), '', ...crit.map(() => ''), '', '대기']); }
   }
   if (!lines.length) { toast('내려받을 결과가 없어요.'); return; }
-  const csv = '﻿' + lines.map((r) => r.map((v, i) => (i === 1 && String(v).startsWith('="') ? v : q(v))).join(',')).join('\r\n');
+  const csv = '﻿' + lines.map((r) => r.map((v) => (String(v).startsWith('="') ? v : q(v))).join(',')).join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   const d = new Date();
-  const part = sel.kind === 'all' ? '전체' : (secName(secById(sel.sec)) + (sel.kind === 'file' ? `_${fileTitle(state.files.get(sel.file))}` : '')).replace(/[\\/:*?"<>|]/g, '_');
+  const part = sel.kind === 'all' ? `전체합계${sel.cls ? `_${clsLabel(sel.cls)}` : ''}`.replace(/[\\/:*?"<>|]/g, '_') : (secName(secById(sel.sec)) + (sel.kind === 'file' ? `_${fileTitle(state.files.get(sel.file))}` : '')).replace(/[\\/:*?"<>|]/g, '_');
   a.href = URL.createObjectURL(blob);
   a.download = `토론채점결과_${part}_${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.csv`;
   document.body.appendChild(a); a.click(); a.remove();
@@ -1265,7 +1387,6 @@ function initEvents() {
 
   document.addEventListener('click', (e) => {
     if (e.target.closest('[data-act="regrade"]')) regradeAll();
-    if (e.target.closest('[data-act="toggle-why"]')) { state.showWhy = !state.showWhy; renderResults(); }
     const vb = e.target.closest('[data-view-st]');
     if (vb) { const [fid, idx] = vb.dataset.viewSt.split('|'); openViewer(fid, idx ? Number(idx) : null); }
     if (e.target.closest('[data-act="regrade-sec"]')) regradeAll(state.activeSec);
@@ -1297,13 +1418,15 @@ function initEvents() {
   $('#result-tabs').addEventListener('click', (e) => {
     const t = e.target.closest('[data-rtab]');
     if (!t) return;
-    if (t.dataset.rtab === 'all') { setResult({ kind: 'all' }); return; }
     if (menuFor === t.dataset.rtab) { closeMenu(); return; }
     closeMenu();
     openMenu(t, t.dataset.rtab);
   });
   $('#result-tabs').addEventListener('scroll', () => { if (menuFor) placeMenu(); }, { passive: true });
+  window.addEventListener('scroll', () => { if (menuFor) placeMenu(); }, { passive: true }); // 메뉴 줄이 화면 위에 붙어 있어도 따라감
   menu.addEventListener('click', (e) => {
+    const c = e.target.closest('[data-pick-cls]');
+    if (c) { setResult({ kind: 'all', cls: c.dataset.pickCls || null }); return; }
     const s = e.target.closest('[data-pick-sec]');
     if (s) { setResult({ kind: 'sec', sec: s.dataset.pickSec }); return; }
     const f = e.target.closest('[data-pick-file]');
@@ -1320,7 +1443,10 @@ function initEvents() {
     const td = e.target.closest('td[data-ed]');
     if (td && !td.querySelector('input')) { startEdit(td); return; }
     const op = e.target.closest('[data-open-file]');
-    if (op) { const f = state.files.get(op.dataset.openFile); if (f) setResult({ kind: 'file', sec: f.sec, file: f.id }); }
+    if (op) { const f = state.files.get(op.dataset.openFile); if (f) setResult({ kind: 'file', sec: f.sec, file: f.id }); return; }
+    if (e.target.closest('a, input, select')) return;
+    const os = e.target.closest('[data-open-st]'); // 학생(줄·학번·이름·영역 점수)을 누르면 채점 분석
+    if (os) { const [fid, idx] = os.dataset.openSt.split('|'); openViewer(fid, Number(idx)); }
   });
   $('#export-csv').addEventListener('click', exportCsv);
   $('#view-answers').addEventListener('click', () => openViewer());

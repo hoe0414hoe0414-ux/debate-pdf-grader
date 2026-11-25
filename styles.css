@@ -364,3 +364,15 @@ body.modal-open { overflow: hidden; }
 blockquote.ans blockquote, .md blockquote { margin: 2px 0; padding-left: 8px; border-left: 2px solid var(--border); color: var(--muted); }
 .tabs-row { flex-wrap: wrap; }
 .tabs-row .tabs { flex: 1 1 360px; }
+
+/* v17: 결과 메뉴 줄 sticky, 학생 줄 누르면 채점 분석, 전체 합계표 */
+#view-results > .tabs-row { position: sticky; top: 0; z-index: 15; background: var(--bg); padding: 10px 0; margin: -10px 0; border-bottom: 1px solid var(--border); }
+#view-results .menu { z-index: 30; }
+tr.st-click { cursor: pointer; }
+tr.st-click:hover td { background: var(--primary-soft); }
+tr.st-click td.ed:hover { outline: 1px dashed var(--primary); outline-offset: -3px; }
+table.grid td.stl .linkish { font-weight: 600; white-space: nowrap; }
+table.grid.combined td.num[data-open-st]:hover { text-decoration: underline; }
+table.grid small.part { display: inline; font-size: 10.5px; color: var(--warn); font-weight: 600; margin-left: 2px; }
+#view-results > .tabs-row .tabs { flex: 1 1 100%; min-width: 0; }
+#view-results > .tabs-row { row-gap: 8px; justify-content: flex-end; }
