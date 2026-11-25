@@ -1697,7 +1697,53 @@ async function appBeat(closed = false) {
   if (!cc.dir || cc.perm !== 'granted') return;
   try { await bridge.writeFile(cc.dir, `${bridge.REQUESTS_DIR}/app.json`, JSON.stringify({ at: new Date().toISOString(), closed })); } catch { /* 무시 */ }
 }
+// 바탕화면 아이콘 만들기: 내려받은 .bat 을 더블클릭하면
+//  - 채점 폴더(도우미 파일이 든 폴더)를 찾으면 → ‘프로그램 + 채점 도우미 함께 켜기’ 아이콘
+//  - 못 찾으면 → 프로그램만 여는 아이콘
+// .bat 안의 한글이 깨지지 않도록 PowerShell 명령을 base64(UTF-16)로 넣는다.
+async function downloadShortcutBat() {
+  if (cc.dir && cc.perm === 'granted') await installHelper(); // 폴더의 도우미 파일을 최신으로
+  const folder = cc.dir?.name || '';
+  const ps = `
+$ErrorActionPreference = 'Continue'
+$want = ${JSON.stringify(folder).replace(/\$/g, '`$')}
+$url = '${location.origin}${location.pathname.replace(/[^/]*$/, '')}'
+$bases = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('MyDocuments'), (Join-Path $env:USERPROFILE 'Downloads'), (Join-Path $env:USERPROFILE 'OneDrive'), $env:USERPROFILE) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+$found = @()
+foreach ($b in $bases) { $found += Get-ChildItem -LiteralPath $b -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'helper\\install-launcher.ps1') } }
+$found = $found | Sort-Object FullName -Unique
+$pick = ($found | Where-Object { $_.Name -eq $want } | Select-Object -First 1)
+if (-not $pick) { $pick = $found | Select-Object -First 1 }
+if ($pick) {
+  Write-Host ('채점 폴더: ' + $pick.FullName)
+  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $pick.FullName 'helper\\install-launcher.ps1') -Root $pick.FullName
+} else {
+  Write-Host '채점 폴더를 찾지 못해 프로그램만 여는 아이콘을 만들어요.' -ForegroundColor Yellow
+  $n = '토론 PDF 채점기'; $d = [Environment]::GetFolderPath('Desktop')
+  $dir = Join-Path $env:LOCALAPPDATA 'DebatePdfGrader'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $ico = Join-Path $dir 'icon-v2.ico'
+  if (-not (Test-Path $ico)) { try { [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/hoe0414hoe0414-ux/debate-pdf-grader/main/assets/favicon.ico' -OutFile $ico } catch {} }
+  $tmp = Join-Path $d ($n + '.new.lnk')
+  $s = (New-Object -ComObject WScript.Shell).CreateShortcut($tmp)
+  $s.TargetPath = (Join-Path $env:WINDIR 'explorer.exe'); $s.Arguments = $url
+  if (Test-Path $ico) { $s.IconLocation = "$ico,0" }
+  $s.Save(); Move-Item -LiteralPath $tmp -Destination (Join-Path $d ($n + '.lnk')) -Force
+  Write-Host '완료: 바탕화면에 ‘토론 PDF 채점기’ 아이콘을 만들었어요.' -ForegroundColor Green
+}
+`;
+  const u16 = new Uint8Array(ps.length * 2);
+  for (let i = 0; i < ps.length; i++) { const c = ps.charCodeAt(i); u16[i * 2] = c & 255; u16[i * 2 + 1] = c >> 8; }
+  let bin = ''; for (let i = 0; i < u16.length; i += 0x8000) bin += String.fromCharCode(...u16.subarray(i, i + 0x8000));
+  const bat = ['@echo off', 'rem Debate PDF Grader - desktop icon', `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${btoa(bin)}`, 'echo.', 'pause', ''].join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([bat], { type: 'application/octet-stream' }));
+  a.download = 'make-desktop-icon.bat';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast('내려받은 ‘make-desktop-icon.bat’을 더블클릭하면 바탕화면 아이콘이 생겨요.');
+}
 function initClaude() {
+  $('#cc-shortcut').addEventListener('click', downloadShortcutBat);
   setInterval(() => appBeat(), 20000);
   window.addEventListener('pagehide', () => { appBeat(true); });
   window.addEventListener('pageshow', (e) => { if (e.persisted) appBeat(); });
