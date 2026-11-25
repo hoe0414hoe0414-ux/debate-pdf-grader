@@ -1608,7 +1608,7 @@ async function installHelper() {
   try {
     const get = async (u) => { const r = await fetch(u, { cache: 'no-cache' }); if (!r.ok) throw new Error(u); return new Uint8Array(await r.arrayBuffer()); };
     await bridge.writeFile(cc.dir, 'helper/grading-helper.ps1', await get('./helper/grading-helper.ps1'));
-    await bridge.writeFile(cc.dir, 'helper/install-autostart.ps1', await get('./helper/install-autostart.ps1'));
+    await bridge.writeFile(cc.dir, 'helper/install-launcher.ps1', await get('./helper/install-launcher.ps1'));
     await bridge.writeFile(cc.dir, '채점 도우미 켜기.bat', await get('./helper/start-helper.bat'));
     await bridge.writeFile(cc.dir, '채점 도우미 끄기.bat', await get('./helper/stop-helper.bat'));
   } catch (e) { console.warn('도우미 파일을 넣지 못함', e); }
@@ -1619,12 +1619,12 @@ async function connectFolder() {
   try {
     if (cc.dir && cc.perm !== 'granted') {
       cc.perm = await bridge.dirPermission(cc.dir, true);
-      if (cc.perm === 'granted') { await installHelper(); renderClaude(); pollFolder(); return; }
+      if (cc.perm === 'granted') { await installHelper(); appBeat(); renderClaude(); pollFolder(); return; }
     }
     const h = await window.showDirectoryPicker({ id: 'dpg-grading', mode: 'readwrite' });
     cc.dir = h; cc.perm = await bridge.dirPermission(h, true);
     await bridge.saveDirHandle(h);
-    if (cc.perm === 'granted') await installHelper();
+    if (cc.perm === 'granted') { await installHelper(); appBeat(); }
     toast(`‘${h.name}’ 폴더에 연결했어요.`);
   } catch (e) { if (e?.name !== 'AbortError') toast('폴더를 연결하지 못했어요.'); }
   renderClaude(); pollFolder();
@@ -1682,7 +1682,7 @@ function renderClaude() {
   const lines = [];
   if (connected) {
     if (helperOn && cc.helperErr) lines.push(`<span class="bad">● 채점 도우미: ${esc(cc.helperErr)}</span>`);
-    else lines.push(helperOn ? '<span class="ok">● 채점 도우미 켜짐(백그라운드) — ‘Claude 채점 시작’만 누르면 자동으로 채점해요</span>' : `<span class="muted">○ 채점 도우미가 아직 켜지지 않았어요. 연결한 폴더의 <b>‘채점 도우미 켜기.bat’을 처음 한 번만</b> 더블클릭해 주세요. 그 뒤로는 PC를 켤 때마다 창 없이 백그라운드에서 자동으로 켜져요.</span>`);
+    else lines.push(helperOn ? '<span class="ok">● 채점 도우미 켜짐(백그라운드) — ‘Claude 채점 시작’만 누르면 자동으로 채점해요</span>' : `<span class="muted">○ 채점 도우미가 꺼져 있어요. 바탕화면 ‘토론 PDF 채점기’로 프로그램을 열면 같이 켜져요. 처음이라면 연결한 폴더의 <b>‘채점 도우미 켜기.bat’을 한 번</b> 더블클릭해 바로가기를 바꿔 주세요.</span>`);
   }
   for (const p of cc.pending.slice(-3).reverse()) {
     const pr = cc.progress[p.id];
@@ -1692,7 +1692,15 @@ function renderClaude() {
   $('#cc-status').innerHTML = lines.join('<br>');
 }
 
+// 프로그램이 열려 있다는 신호 → 도우미는 이 신호가 끊기면(창을 닫으면) 같이 꺼진다
+async function appBeat(closed = false) {
+  if (!cc.dir || cc.perm !== 'granted') return;
+  try { await bridge.writeFile(cc.dir, `${bridge.REQUESTS_DIR}/app.json`, JSON.stringify({ at: new Date().toISOString(), closed })); } catch { /* 무시 */ }
+}
 function initClaude() {
+  setInterval(() => appBeat(), 20000);
+  window.addEventListener('pagehide', () => { appBeat(true); });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) appBeat(); });
   $('#cc-connect').addEventListener('click', connectFolder);
   $('#cc-send').addEventListener('click', startClaudeGrading);
   const rf = $('#result-file');
@@ -1705,7 +1713,7 @@ function initClaude() {
   bridge.loadDirHandle().then(async (h) => {
     if (!h) return renderClaude();
     cc.dir = h; cc.perm = await bridge.dirPermission(h, false);
-    if (cc.perm === 'granted') installHelper(); // 도우미 파일을 늘 최신으로 (켜져 있는 도우미는 다음 PC 시작 때 새 버전)
+    if (cc.perm === 'granted') { installHelper(); appBeat(); } // 도우미 파일을 늘 최신으로 (켜져 있는 도우미는 다음 PC 시작 때 새 버전)
     renderClaude(); pollFolder();
   });
   renderClaude();
